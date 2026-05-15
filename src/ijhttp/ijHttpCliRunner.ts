@@ -5,11 +5,13 @@ import {
     Disposable,
     Memento,
     OutputChannel,
+    Position,
     QuickPickItem,
     Range,
     StatusBarAlignment,
     StatusBarItem,
     TextDocument,
+    WorkspaceEdit,
     window,
     workspace
 } from 'vscode';
@@ -22,6 +24,17 @@ interface IjHttpRuntimeSettings {
     publicEnvironmentFile?: string;
     privateEnvironmentFile?: string;
     logLevel: string;
+}
+
+interface ResponseCaptureContext {
+    captureFilePath: string;
+    captureRelativePath: string;
+}
+
+interface IjHttpRunResult {
+    exitCode: number;
+    responseStatusCode?: number;
+    responseContentType?: string;
 }
 
 interface EnvironmentContext {
@@ -86,9 +99,11 @@ export class IjHttpCliRunner implements Disposable {
         }
 
         const temporaryFile = this.buildTemporaryFilePath(targetDocument.fileName);
-        await fileSystem.writeFile(temporaryFile, this.normalizeBlockText(requestBlock.text), 'utf8');
+        const responseCaptureContext = await this.prepareResponseCapture(targetDocument, requestBlock.text);
+        const temporaryRequestText = this.buildTemporaryRequestText(requestBlock.text, responseCaptureContext?.captureRelativePath);
+        await fileSystem.writeFile(temporaryFile, temporaryRequestText, 'utf8');
 
-        const argumentList = this.buildArgumentList(runtimeSettings, temporaryFile);
+        const argumentList = this.buildArgumentList(runtimeSettings, temporaryFile, !!responseCaptureContext);
         const workingDirectory = path.dirname(targetDocument.fileName);
         this.outputChannel.show(true);
         this.outputChannel.appendLine(`$ ${runtimeSettings.executablePath} ${argumentList.map(item => this.quoteArgument(item)).join(' ')}`);
@@ -96,17 +111,19 @@ export class IjHttpCliRunner implements Disposable {
         await this.refreshStatus(targetDocument);
 
         try {
-            const exitCode = await this.runProcess(runtimeSettings.executablePath, argumentList, workingDirectory);
-            if (exitCode === 0) {
+            const runResult = await this.runProcess(runtimeSettings.executablePath, argumentList, workingDirectory);
+            if (runResult.exitCode === 0) {
+                await this.persistResponseHistory(targetDocument, requestBlock.range, responseCaptureContext, runResult);
                 this.lastRunState = 'success';
                 await this.refreshStatus(targetDocument);
                 window.showInformationMessage('ijhttp finished successfully.');
             } else {
-                this.lastRunState = `failed (${exitCode})`;
+                this.lastRunState = `failed (${runResult.exitCode})`;
                 await this.refreshStatus(targetDocument);
-                window.showErrorMessage(`ijhttp finished with exit code ${exitCode}.`);
+                window.showErrorMessage(`ijhttp finished with exit code ${runResult.exitCode}.`);
             }
         } finally {
+            await this.cleanupResponseCapture(responseCaptureContext);
             await this.removeTemporaryFile(temporaryFile);
         }
     }
@@ -430,7 +447,7 @@ export class IjHttpCliRunner implements Disposable {
         return blockText.endsWith('\n') ? blockText : `${blockText}\n`;
     }
 
-    private buildArgumentList(runtimeSettings: IjHttpRuntimeSettings, temporaryFile: string): string[] {
+    private buildArgumentList(runtimeSettings: IjHttpRuntimeSettings, temporaryFile: string, needsResponseMetadata: boolean): string[] {
         const argumentList: string[] = [];
         if (runtimeSettings.publicEnvironmentFile) {
             argumentList.push('--env-file', runtimeSettings.publicEnvironmentFile);
@@ -444,20 +461,23 @@ export class IjHttpCliRunner implements Disposable {
             argumentList.push('--env', runtimeSettings.environmentName);
         }
 
-        argumentList.push('-L', runtimeSettings.logLevel, temporaryFile);
+        argumentList.push('-L', this.getEffectiveLogLevel(runtimeSettings.logLevel, needsResponseMetadata), temporaryFile);
         return argumentList;
     }
 
-    private async runProcess(executablePath: string, argumentList: string[], workingDirectory: string): Promise<number> {
-        return new Promise<number>((resolve, reject) => {
+    private async runProcess(executablePath: string, argumentList: string[], workingDirectory: string): Promise<IjHttpRunResult> {
+        return new Promise<IjHttpRunResult>((resolve, reject) => {
             const processHandle = spawn(executablePath, argumentList, { cwd: workingDirectory });
+            let stdoutRemainder = '';
+            let stderrRemainder = '';
+            const runResult: IjHttpRunResult = { exitCode: 1 };
 
             processHandle.stdout.on('data', chunk => {
-                this.outputChannel.append(chunk.toString());
+                stdoutRemainder = this.consumeProcessOutput(chunk.toString(), stdoutRemainder, runResult);
             });
 
             processHandle.stderr.on('data', chunk => {
-                this.outputChannel.append(chunk.toString());
+                stderrRemainder = this.consumeProcessOutput(chunk.toString(), stderrRemainder, runResult);
             });
 
             processHandle.on('error', error => {
@@ -465,9 +485,232 @@ export class IjHttpCliRunner implements Disposable {
             });
 
             processHandle.on('close', exitCode => {
-                resolve(exitCode ?? 1);
+                this.flushProcessOutput(stdoutRemainder, runResult);
+                this.flushProcessOutput(stderrRemainder, runResult);
+                runResult.exitCode = exitCode ?? 1;
+                resolve(runResult);
             });
         });
+    }
+
+    private consumeProcessOutput(chunkText: string, previousRemainder: string, runResult: IjHttpRunResult): string {
+        const cleanedText = this.stripAnsiSequences(chunkText)
+            .replace(/\r\n/g, '\n')
+            .replace(/\r/g, '\n');
+        const combinedText = `${previousRemainder}${cleanedText}`;
+        const outputLines = combinedText.split('\n');
+        const nextRemainder = outputLines.pop() ?? '';
+
+        for (const outputLine of outputLines) {
+            this.consumeOutputLine(outputLine, runResult);
+        }
+
+        return nextRemainder;
+    }
+
+    private flushProcessOutput(outputRemainder: string, runResult: IjHttpRunResult): void {
+        if (outputRemainder.trim().length === 0) {
+            return;
+        }
+
+        this.consumeOutputLine(outputRemainder, runResult);
+    }
+
+    private consumeOutputLine(outputLine: string, runResult: IjHttpRunResult): void {
+        this.captureResponseMetadata(outputLine, runResult);
+        this.appendOutputLine(outputLine);
+    }
+
+    private captureResponseMetadata(outputLine: string, runResult: IjHttpRunResult): void {
+        const trimmedLine = outputLine.trim();
+        const statusMatch = /^HTTP\/\S+\s+(\d{3})\b/i.exec(trimmedLine);
+        if (statusMatch) {
+            runResult.responseStatusCode = Number(statusMatch[1]);
+            return;
+        }
+
+        const contentTypeMatch = /^content-type:\s*([^;]+)(?:;.*)?$/i.exec(trimmedLine);
+        if (contentTypeMatch) {
+            runResult.responseContentType = contentTypeMatch[1].trim().toLowerCase();
+        }
+    }
+
+    private appendOutputLine(outputLine: string): void {
+        const trimmedLine = outputLine.trimEnd();
+        if (!trimmedLine.trim()) {
+            return;
+        }
+
+        if (this.isIjHttpNoiseLine(trimmedLine)) {
+            return;
+        }
+
+        this.outputChannel.appendLine(trimmedLine);
+    }
+
+    private stripAnsiSequences(outputText: string): string {
+        return outputText.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '');
+    }
+
+    private isIjHttpNoiseLine(outputLine: string): boolean {
+        if (/setlocale:\s*LC_CTYPE/i.test(outputLine)) {
+            return true;
+        }
+
+        if (/[┌┐└┘├┤┬┴┼│─━]/.test(outputLine)) {
+            return true;
+        }
+
+        if (/^\s*\d+%\s+━+/.test(outputLine)) {
+            return true;
+        }
+
+        if (/^(= request =>|<= response =)$/i.test(outputLine)) {
+            return true;
+        }
+
+        if (/^[A-Za-z0-9-]+:\s+.+$/.test(outputLine)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private async prepareResponseCapture(targetDocument: TextDocument, requestBlockText: string): Promise<ResponseCaptureContext | undefined> {
+        if (Constants.ResponseRedirectRegex.test(requestBlockText)) {
+            this.outputChannel.appendLine('Response history skipped: request already contains an explicit response redirect.');
+            return undefined;
+        }
+
+        const responseDirectoryPath = path.join(path.dirname(targetDocument.fileName), '.response');
+        await fileSystem.mkdir(responseDirectoryPath, { recursive: true });
+
+        const captureFileName = `.ijhttp-response.${process.pid}.${Date.now()}.body`;
+        return {
+            captureFilePath: path.join(responseDirectoryPath, captureFileName),
+            captureRelativePath: `./${path.posix.join('.response', captureFileName)}`,
+        };
+    }
+
+    private buildTemporaryRequestText(requestBlockText: string, captureRelativePath?: string): string {
+        const normalizedBlockText = this.normalizeBlockText(requestBlockText).replace(/\s+$/, '');
+        if (!captureRelativePath) {
+            return `${normalizedBlockText}\n`;
+        }
+
+        return `${normalizedBlockText}\n\n>>! ${captureRelativePath}\n`;
+    }
+
+    private getEffectiveLogLevel(logLevel: string, needsResponseMetadata: boolean): string {
+        if (!needsResponseMetadata) {
+            return logLevel;
+        }
+
+        return logLevel === 'BASIC' ? 'HEADERS' : logLevel;
+    }
+
+    private async persistResponseHistory(
+        targetDocument: TextDocument,
+        requestRange: Range,
+        responseCaptureContext: ResponseCaptureContext | undefined,
+        runResult: IjHttpRunResult
+    ): Promise<void> {
+        if (!responseCaptureContext) {
+            return;
+        }
+
+        if (!(await this.fileExists(responseCaptureContext.captureFilePath))) {
+            return;
+        }
+
+        const finalHistoryFileName = await this.finalizeResponseCapture(responseCaptureContext, runResult);
+        const historyCommentLine = `# <> ./${path.posix.join('.response', finalHistoryFileName)}`;
+        await this.appendHistoryComment(targetDocument, requestRange, historyCommentLine);
+    }
+
+    private async finalizeResponseCapture(responseCaptureContext: ResponseCaptureContext, runResult: IjHttpRunResult): Promise<string> {
+        const responseExtension = this.getResponseFileExtension(runResult.responseContentType);
+        const statusCode = runResult.responseStatusCode ?? 200;
+        const baseFileName = `${this.formatTimestamp(new Date())}.${statusCode}.${responseExtension}`;
+        const finalFilePath = await this.buildUniqueResponseFilePath(path.dirname(responseCaptureContext.captureFilePath), baseFileName);
+        await fileSystem.rename(responseCaptureContext.captureFilePath, finalFilePath);
+        return path.basename(finalFilePath);
+    }
+
+    private async appendHistoryComment(targetDocument: TextDocument, requestRange: Range, historyCommentLine: string): Promise<void> {
+        const insertionLine = Math.min(requestRange.end.line + 1, targetDocument.lineCount);
+        const previousLineText = targetDocument.lineAt(requestRange.end.line).text;
+        const nextLineText = insertionLine < targetDocument.lineCount ? targetDocument.lineAt(insertionLine).text : '';
+        const leadingSeparator = previousLineText.trim() === '' ? '' : '\n\n';
+        const trailingSeparator = insertionLine < targetDocument.lineCount && nextLineText.trim() !== '' ? '\n' : '';
+        const workspaceEdit = new WorkspaceEdit();
+        workspaceEdit.insert(targetDocument.uri, new Position(insertionLine, 0), `${leadingSeparator}${historyCommentLine}${trailingSeparator}`);
+        await workspace.applyEdit(workspaceEdit);
+        await targetDocument.save();
+    }
+
+    private getResponseFileExtension(contentType?: string): string {
+        if (!contentType) {
+            return 'txt';
+        }
+
+        if (contentType.includes('json')) {
+            return 'json';
+        }
+
+        if (contentType.includes('xml')) {
+            return 'xml';
+        }
+
+        if (contentType === 'text/html') {
+            return 'html';
+        }
+
+        if (contentType.startsWith('text/')) {
+            return 'txt';
+        }
+
+        if (contentType.includes('javascript')) {
+            return 'js';
+        }
+
+        if (contentType.includes('pdf')) {
+            return 'pdf';
+        }
+
+        return 'bin';
+    }
+
+    private formatTimestamp(dateValue: Date): string {
+        const year = dateValue.getFullYear();
+        const month = `${dateValue.getMonth() + 1}`.padStart(2, '0');
+        const day = `${dateValue.getDate()}`.padStart(2, '0');
+        const hours = `${dateValue.getHours()}`.padStart(2, '0');
+        const minutes = `${dateValue.getMinutes()}`.padStart(2, '0');
+        const seconds = `${dateValue.getSeconds()}`.padStart(2, '0');
+        return `${year}-${month}-${day}T${hours}${minutes}${seconds}`;
+    }
+
+    private async buildUniqueResponseFilePath(directoryPath: string, baseFileName: string): Promise<string> {
+        const extension = path.extname(baseFileName);
+        const baseName = path.basename(baseFileName, extension);
+        let candidateFilePath = path.join(directoryPath, baseFileName);
+        let suffixIndex = 1;
+
+        while (await this.fileExists(candidateFilePath)) {
+            candidateFilePath = path.join(directoryPath, `${baseName}-${suffixIndex}${extension}`);
+            suffixIndex++;
+        }
+
+        return candidateFilePath;
+    }
+
+    private async cleanupResponseCapture(responseCaptureContext: ResponseCaptureContext | undefined): Promise<void> {
+        if (!responseCaptureContext || !(await this.fileExists(responseCaptureContext.captureFilePath))) {
+            return;
+        }
+
+        await this.removeTemporaryFile(responseCaptureContext.captureFilePath);
     }
 
     private async removeTemporaryFile(temporaryFile: string): Promise<void> {

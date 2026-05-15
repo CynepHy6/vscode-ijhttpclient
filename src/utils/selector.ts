@@ -17,16 +17,22 @@ export interface SelectedRequestBlock {
 export class Selector {
     public static getRequestBlock(document: TextDocument, range: Range | null = null): SelectedRequestBlock | null {
         const activeLine = range?.start.line ?? 0;
-        const text = this.getDelimitedText(document.getText(), activeLine);
-        if (text === null) {
-            return null;
-        }
-
         const lines = document.getText().split(Constants.LineSplitterRegex);
         const blockRange = this.findBlockRange(lines, activeLine);
         if (!blockRange) {
             return null;
         }
+
+        const blockLines = lines.slice(blockRange[0], blockRange[1] + 1);
+        const requestLineIndex = this.findRequestLineIndex(blockLines);
+        const globalFileVariableLines = blockRange[0] > 0 ? this.getGlobalFileVariableLines(lines) : [];
+        const localFileVariableLines = this.getLocalFileVariableLines(blockLines, requestLineIndex);
+        const executableBlockLines = this.removeLocalFileVariableLines(blockLines, requestLineIndex);
+        const text = this.joinExecutableSections([
+            globalFileVariableLines,
+            localFileVariableLines,
+            executableBlockLines,
+        ]);
 
         return {
             text,
@@ -99,41 +105,98 @@ export class Selector {
         return Constants.ResponseStatusLineRegex.test(line);
     }
 
-    public static getDelimitedText(fullText: string, currentLine: number): string | null {
-        const lines: string[] = fullText.split(Constants.LineSplitterRegex);
-        const delimiterLineNumbers: number[] = this.getDelimiterRows(lines);
-        if (delimiterLineNumbers.length === 0) {
-            return fullText;
-        }
-
-        // return null if cursor is in delimiter line
-        if (delimiterLineNumbers.includes(currentLine)) {
-            return null;
-        }
-
-        if (currentLine < delimiterLineNumbers[0]) {
-            return lines.slice(0, delimiterLineNumbers[0]).join(EOL);
-        }
-
-        if (currentLine > delimiterLineNumbers[delimiterLineNumbers.length - 1]) {
-            return lines.slice(delimiterLineNumbers[delimiterLineNumbers.length - 1] + 1).join(EOL);
-        }
-
-        for (let index = 0; index < delimiterLineNumbers.length - 1; index++) {
-            const start = delimiterLineNumbers[index];
-            const end = delimiterLineNumbers[index + 1];
-            if (start < currentLine && currentLine < end) {
-                return lines.slice(start + 1, end).join(EOL);
-            }
-        }
-
-        return null;
-    }
-
     public static getDelimiterRows(lines: string[]): number[] {
         return Object.entries(lines)
             .filter(([, value]) => Constants.DelimiterLineRegex.test(value))
             .map(([index]) => +index);
+    }
+
+    private static getGlobalFileVariableLines(lines: string[]): string[] {
+        const firstDelimiterLine = this.getDelimiterRows(lines)[0] ?? lines.length;
+        const globalPrefixLines = lines.slice(0, firstDelimiterLine);
+
+        return globalPrefixLines.filter(lineText => this.isFileVariableDefinitionLine(lineText));
+    }
+
+    private static getLocalFileVariableLines(blockLines: string[], requestLineIndex: number | undefined): string[] {
+        if (requestLineIndex === undefined) {
+            return [];
+        }
+
+        return blockLines
+            .slice(0, requestLineIndex)
+            .filter(lineText => this.isFileVariableDefinitionLine(lineText));
+    }
+
+    private static removeLocalFileVariableLines(blockLines: string[], requestLineIndex: number | undefined): string[] {
+        if (requestLineIndex === undefined) {
+            return blockLines;
+        }
+
+        return blockLines.filter((lineText, lineIndex) =>
+            lineIndex >= requestLineIndex || !this.isFileVariableDefinitionLine(lineText)
+        );
+    }
+
+    private static joinExecutableSections(sectionLines: string[][]): string {
+        const sectionTexts = sectionLines
+            .map(lines => this.trimEmptyBoundaryLines(lines).join(EOL))
+            .filter(sectionText => sectionText.length > 0);
+
+        return sectionTexts.join(`${EOL}${EOL}`);
+    }
+
+    private static trimEmptyBoundaryLines(lines: string[]): string[] {
+        let startIndex = 0;
+        let endIndex = lines.length - 1;
+
+        while (startIndex <= endIndex && this.isEmptyLine(lines[startIndex])) {
+            startIndex++;
+        }
+
+        while (endIndex >= startIndex && this.isEmptyLine(lines[endIndex])) {
+            endIndex--;
+        }
+
+        return lines.slice(startIndex, endIndex + 1);
+    }
+
+    private static findRequestLineIndex(blockLines: string[]): number | undefined {
+        let insideScriptBlock = false;
+
+        for (let lineIndex = 0; lineIndex < blockLines.length; lineIndex++) {
+            const currentLine = blockLines[lineIndex];
+
+            if (insideScriptBlock) {
+                if (Constants.ScriptCloseRegex.test(currentLine)) {
+                    insideScriptBlock = false;
+                }
+                continue;
+            }
+
+            if (this.isEmptyLine(currentLine) || this.isCommentLine(currentLine) || this.isFileVariableDefinitionLine(currentLine)) {
+                continue;
+            }
+
+            if (Constants.MetadataLineRegex.test(currentLine) || Constants.ResponseRedirectRegex.test(currentLine)) {
+                continue;
+            }
+
+            if (Constants.ScriptInlineRegex.test(currentLine)) {
+                continue;
+            }
+
+            if (Constants.ScriptStartRegex.test(currentLine)) {
+                insideScriptBlock = true;
+                continue;
+            }
+
+            if (Constants.RequestLineRegex.test(currentLine)) {
+                return lineIndex;
+            }
+        }
+
+        return undefined;
     }
 
     private static findBlockRange(lines: string[], currentLine: number): [number, number] | null {

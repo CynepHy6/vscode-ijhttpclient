@@ -24,6 +24,7 @@
 - запуск текущего request-блока через системный `ijhttp`
 - автопоиск `http-client.env.json` и `http-client.private.env.json`
 - поддержка типовых конструкций JetBrains HTTP Client: `# @name`, `{{variables}}`, pre-request scripts и response-handler scripts
+- сохранение `body` ответа в локальный каталог `.response/` и добавление под выполненным запросом history-комментариев вида `# <> ./.response/...`
 
 ## Использование
 
