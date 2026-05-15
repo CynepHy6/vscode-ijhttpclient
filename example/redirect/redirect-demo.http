@@ -1,0 +1,6 @@
+### saveResponse
+# @name saveResponse
+GET https://httpbin.org/json
+Accept: application/json
+
+>>! ./saved-response.json

@@ -1,0 +1,15 @@
+@baseUrl = https://httpbin.org
+
+### fileBody
+# @name fileBody
+POST {{baseUrl}}/anything/file-body
+Content-Type: application/json
+Accept: application/json
+
+< ./payload.json
+
+> {%
+  client.test("body from file was sent", function() {
+    client.assert(response.status === 200, "Expected HTTP 200");
+  });
+%}

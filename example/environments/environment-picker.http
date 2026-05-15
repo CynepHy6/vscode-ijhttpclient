@@ -1,0 +1,13 @@
+### currentEnvironment
+# @name currentEnvironment
+GET {{baseUrl}}/anything/environment-picker
+Accept: application/json
+X-Environment-Name: {{environmentName}}
+X-Public-Token: {{publicToken}}
+X-Private-Token: {{privateToken}}
+
+> {%
+  client.test("environment variables resolved", function() {
+    client.assert(response.status === 200, "Expected HTTP 200");
+  });
+%}

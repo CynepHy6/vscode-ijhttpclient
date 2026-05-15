@@ -1,0 +1,16 @@
+@baseUrl = https://httpbin.org
+@requestSource = query-variables-demo
+
+### splitQuery
+# @name splitQuery
+GET {{baseUrl}}/get
+  ?source={{requestSource}}
+  &page=1
+  &filter=active
+Accept: application/json
+
+> {%
+  client.test("query string contains expected values", function() {
+    client.assert(response.status === 200, "Expected HTTP 200");
+  });
+%}

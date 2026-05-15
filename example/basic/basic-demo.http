@@ -1,0 +1,32 @@
+### hello
+# @name hello
+GET {{baseUrl}}/get?source=ijhttp-client-demo
+Accept: application/json
+User-Agent: {{userAgent}}
+
+> {%
+  client.test("status is 200", function() {
+    client.assert(response.status === 200, "Expected HTTP 200");
+  });
+%}
+
+###
+
+### createAnything
+# @name createAnything
+POST {{baseUrl}}/anything
+Content-Type: application/json
+Accept: application/json
+User-Agent: {{userAgent}}
+
+{
+  "message": "Hello from ijhttp Client demo",
+  "source": "basic-demo.http"
+}
+
+> {%
+  client.test("echo contains message", function() {
+    client.assert(response.status === 200, "Expected HTTP 200");
+    client.assert(response.body.json.message === "Hello from ijhttp Client demo", "Unexpected echoed message");
+  });
+%}

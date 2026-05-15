@@ -1,0 +1,23 @@
+@baseUrl = https://httpbin.org
+
+### multipartUpload
+# @name multipartUpload
+POST {{baseUrl}}/anything/multipart
+Content-Type: multipart/form-data; boundary=WebAppBoundary
+Accept: application/json
+
+--WebAppBoundary
+Content-Disposition: form-data; name="note"
+
+Multipart example
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="sample.txt"
+
+< ./sample.txt
+--WebAppBoundary--
+
+> {%
+  client.test("multipart request succeeded", function() {
+    client.assert(response.status === 200, "Expected HTTP 200");
+  });
+%}

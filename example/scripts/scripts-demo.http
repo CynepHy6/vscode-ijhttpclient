@@ -1,0 +1,16 @@
+### preRequestAndResponseHandler
+# @name preRequestAndResponseHandler
+< {%
+  request.variables.set("demoPath", "anything/pre-script");
+  request.variables.set("baseUrl", "https://httpbin.org");
+  request.variables.set("demoHeaderValue", "set-in-pre-script");
+%}
+GET {{baseUrl}}/{{demoPath}}
+Accept: application/json
+X-Demo-Header: {{demoHeaderValue}}
+
+> {%
+  client.test("pre-request variables were used", function() {
+    client.assert(response.status === 200, "Expected HTTP 200");
+  });
+%}

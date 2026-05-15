@@ -1,218 +1,296 @@
-import { ConfigurationChangeEvent, Diagnostic, DiagnosticCollection, DiagnosticSeverity, Disposable, languages, Position, Range, TextDocument, workspace } from 'vscode';
+import * as path from 'path';
+import { Diagnostic, DiagnosticCollection, DiagnosticSeverity, Disposable, languages, Position, Range, TextDocument, workspace } from 'vscode';
 import * as Constants from '../common/constants';
-import { EnvironmentController } from '../controllers/environmentController';
-import { DocumentCache } from '../models/documentCache';
-import { ResolveState } from '../models/httpVariableResolveResult';
-import { VariableType } from '../models/variableType';
 import { disposeAll } from '../utils/dispose';
-import { RequestVariableCache } from "../utils/requestVariableCache";
-import { RequestVariableCacheValueProcessor } from "../utils/requestVariableCacheValueProcessor";
 import { Selector } from '../utils/selector';
 
-import { VariableProcessor } from "../utils/variableProcessor";
+export class IjHttpDiagnosticsProvider implements Disposable {
+    private readonly diagnosticCollection: DiagnosticCollection = languages.createDiagnosticCollection('ijhttp-client');
 
-interface VariableWithPosition {
-    name: string;
-    path: string;
-    begin: Position;
-    end: Position;
-}
+    private disposables: Disposable[] = [this.diagnosticCollection];
 
-interface PromptVariableDefinitionWithRange {
-    name: string;
-    range: [number, number];
-}
-
-export class CustomVariableDiagnosticsProvider {
-    private httpDiagnosticCollection: DiagnosticCollection = languages.createDiagnosticCollection();
-
-    private disposables: Disposable[] = [this.httpDiagnosticCollection];
-
-    private pendingHttpDocuments = new Set<TextDocument>();
+    private readonly pendingDocuments = new Set<TextDocument>();
 
     private timer: NodeJS.Timeout | undefined;
 
-    private fileVariableReferenceCache = new DocumentCache<Map<string, VariableWithPosition[]>>();
-
     constructor() {
         this.disposables.push(
-            workspace.onDidOpenTextDocument(document => this.queue(document)),
-            workspace.onDidChangeTextDocument(event => this.queue(event.document)),
-            workspace.onDidCloseTextDocument(document => this.clear(document)),
-            workspace.onDidChangeConfiguration(event => this.queueAll(event)),
-            EnvironmentController.onDidChangeEnvironment(_ => this.queueAll()),
-            RequestVariableCache.onDidCreateNewRequestVariable(event => this.queue(event.document))
+            workspace.onDidOpenTextDocument(document => this.queueDocument(document)),
+            workspace.onDidChangeTextDocument(event => this.queueDocument(event.document)),
+            workspace.onDidCloseTextDocument(document => this.clearDiagnostics(document)),
+            workspace.onDidChangeConfiguration(() => this.queueAllDocuments())
         );
-        this.queueAll();
+        this.queueAllDocuments();
     }
 
-    private queue(document: TextDocument) {
-        if (document.languageId === 'http' && document.uri.scheme === 'file') {
-            this.pendingHttpDocuments.add(document);
-            this.startTimer();
+    public async checkDocument(document: TextDocument): Promise<Diagnostic[]> {
+        if (!this.supportsDocument(document)) {
+            this.diagnosticCollection.delete(document.uri);
+            return [];
         }
+
+        const diagnostics = this.buildDiagnostics(document);
+        this.diagnosticCollection.set(document.uri, diagnostics);
+        return diagnostics;
     }
 
-    private queueAll(event?: ConfigurationChangeEvent) {
-        workspace.textDocuments
-            .filter(document => event === undefined || event.affectsConfiguration('rest-client', document.uri))
-            .forEach(document => this.queue(document));
-    }
-
-    private startTimer() {
-        if (this.timer) {
-            clearTimeout(this.timer);
-        }
-        this.timer = setTimeout(() => {
-            this.checkVariables();
-        }, 300);
-    }
-
-    private clear(document: TextDocument) {
-        this.httpDiagnosticCollection.delete(document.uri);
-        this.pendingHttpDocuments.delete(document);
-    }
-
-    public dispose() {
+    public dispose(): void {
         disposeAll(this.disposables);
         this.disposables = [];
     }
 
-    private async checkVariables() {
-        for (const document of this.pendingHttpDocuments) {
-            this.pendingHttpDocuments.delete(document);
+    private queueDocument(document: TextDocument): void {
+        if (this.supportsDocument(document)) {
+            this.pendingDocuments.add(document);
+            this.startTimer();
+        }
+    }
+
+    private queueAllDocuments(): void {
+        workspace.textDocuments.forEach(document => this.queueDocument(document));
+    }
+
+    private startTimer(): void {
+        if (this.timer) {
+            clearTimeout(this.timer);
+        }
+
+        this.timer = setTimeout(() => {
+            void this.flushPendingDocuments();
+        }, 300);
+    }
+
+    private clearDiagnostics(document: TextDocument): void {
+        this.diagnosticCollection.delete(document.uri);
+        this.pendingDocuments.delete(document);
+    }
+
+    private async flushPendingDocuments(): Promise<void> {
+        for (const document of this.pendingDocuments) {
+            this.pendingDocuments.delete(document);
             if (document.isClosed) {
                 continue;
             }
 
-            const diagnostics: Diagnostic[] = [];
-
-            const allAvailableVariables = await VariableProcessor.getAllVariablesDefinitions(document);
-            const promptVariableDefinitions = this.findPromptVariableDefinitions(document);
-            const variableReferences = this.findVariableReferences(document);
-
-            // Variable not found
-            [...variableReferences.entries()]
-                .filter(([name]) => !allAvailableVariables.has(name))
-                .forEach(([, variables]) => {
-                    variables
-                        .filter(variable => !this.hasPromptVariableDefintion(promptVariableDefinitions, variable))
-                        .forEach(({ name, begin, end }) => {
-                            diagnostics.push(
-                                new Diagnostic(new Range(begin, end), `${name} is not found`, DiagnosticSeverity.Error));
-
-                        });
-                });
-
-            // Request variable not active
-            [...variableReferences.entries()]
-                .filter(([name]) =>
-                    allAvailableVariables.has(name)
-                    && allAvailableVariables.get(name)![0] === VariableType.Request
-                    && !RequestVariableCache.has(document, name))
-                .forEach(([, variables]) => {
-                    variables.forEach(({ name, begin, end }) => {
-                        diagnostics.push(
-                            new Diagnostic(new Range(begin, end), `Request '${name}' has not been sent`, DiagnosticSeverity.Information));
-                    });
-                });
-
-            // Request variable resolve with warning or error
-            [...variableReferences.entries()]
-                .filter(([name]) =>
-                    allAvailableVariables.has(name)
-                    && allAvailableVariables.get(name)![0] === VariableType.Request
-                    && RequestVariableCache.has(document, name))
-                .forEach(([name, variables]) => {
-                    const value = RequestVariableCache.get(document, name);
-                    variables.forEach(({ path, begin, end }) => {
-                        path = path.replace(/^\{{2}\s*/, '').replace(/\s*\}{2}$/, '');
-                        const result = RequestVariableCacheValueProcessor.resolveRequestVariable(value, path);
-                        if (result.state !== ResolveState.Success) {
-                            diagnostics.push(
-                                new Diagnostic(
-                                    new Range(begin, end),
-                                    result.message,
-                                    result.state === ResolveState.Error ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning));
-                        }
-                    });
-                });
-
-            this.httpDiagnosticCollection.set(document.uri, diagnostics);
+            await this.checkDocument(document);
         }
     }
 
-    private findVariableReferences(document: TextDocument): Map<string, VariableWithPosition[]> {
-        if (this.fileVariableReferenceCache.has(document)) {
-            return this.fileVariableReferenceCache.get(document)!;
+    private supportsDocument(document: TextDocument): boolean {
+        if (document.languageId === 'http') {
+            return true;
         }
 
-        const vars = new Map<string, VariableWithPosition[]>();
+        const fileName = path.basename(document.fileName);
+        return fileName === Constants.PublicEnvironmentFileName || fileName === Constants.PrivateEnvironmentFileName;
+    }
+
+    private buildDiagnostics(document: TextDocument): Diagnostic[] {
+        if (document.languageId === 'http') {
+            return this.buildHttpDiagnostics(document);
+        }
+
+        return this.buildEnvironmentDiagnostics(document);
+    }
+
+    private buildEnvironmentDiagnostics(document: TextDocument): Diagnostic[] {
+        const diagnostics: Diagnostic[] = [];
+        try {
+            const parsedContent = JSON.parse(document.getText());
+            if (!parsedContent || Array.isArray(parsedContent) || typeof parsedContent !== 'object') {
+                diagnostics.push(new Diagnostic(
+                    new Range(new Position(0, 0), new Position(0, Math.max(1, document.lineAt(0).text.length))),
+                    'Environment file must contain a JSON object with environment names.',
+                    DiagnosticSeverity.Error
+                ));
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Invalid JSON.';
+            diagnostics.push(new Diagnostic(
+                new Range(new Position(0, 0), new Position(0, Math.max(1, document.lineAt(0).text.length))),
+                message,
+                DiagnosticSeverity.Error
+            ));
+        }
+
+        return diagnostics;
+    }
+
+    private buildHttpDiagnostics(document: TextDocument): Diagnostic[] {
+        const diagnostics: Diagnostic[] = [];
         const lines = document.getText().split(Constants.LineSplitterRegex);
-        const pattern = /\{{2}(\w[^\s{}]*)\}{2}/g;
-        lines.forEach((line, lineNumber) => {
-            if (Selector.isCommentLine(line)) {
+        const blockRanges = this.collectBlockRanges(lines);
+
+        this.validateScriptBlocks(lines, diagnostics);
+        this.validateVariables(lines, diagnostics);
+
+        for (const [startLine, endLine] of blockRanges) {
+            this.validateRequestBlock(lines, startLine, endLine, diagnostics);
+        }
+
+        return diagnostics;
+    }
+
+    private collectBlockRanges(lines: string[]): [number, number][] {
+        const blockRanges: [number, number][] = [];
+        const delimiterRows = Selector.getDelimiterRows(lines);
+        const boundaries = [-1, ...delimiterRows, lines.length];
+        for (let index = 0; index < boundaries.length - 1; index++) {
+            const startLine = boundaries[index] + 1;
+            const endLine = boundaries[index + 1] - 1;
+            if (startLine <= endLine) {
+                blockRanges.push([startLine, endLine]);
+            }
+        }
+
+        return blockRanges;
+    }
+
+    private validateScriptBlocks(lines: string[], diagnostics: Diagnostic[]): void {
+        let currentScriptStart: number | undefined;
+
+        lines.forEach((lineText, lineNumber) => {
+            if (Constants.ScriptInlineRegex.test(lineText)) {
+                currentScriptStart = undefined;
                 return;
             }
 
-            let match: RegExpExecArray | null;
-            while (match = pattern.exec(line)) {
-                const [path] = match;
-                let [, name] = match;
-                // For request variable, only keep the first part before dot for name
-                const requestIndex = name.indexOf('.request');
-                if (requestIndex > 0) {
-                    name = name.substring(0, requestIndex);
+            if (Constants.ScriptStartRegex.test(lineText)) {
+                if (currentScriptStart !== undefined) {
+                    diagnostics.push(this.createDiagnostic(lineNumber, lineText.length, 'Nested script blocks are not supported.', DiagnosticSeverity.Error));
                 }
-                const responseIndex = name.indexOf('.response');
-                if (responseIndex > 0) {
-                    name = name.substring(0, responseIndex);
-                }
-                const variable = {
-                    name,
-                    path,
-                    begin: new Position(lineNumber, match.index),
-                    end: new Position(lineNumber, match.index + path.length)
-                };
-                if (vars.has(name)) {
-                    vars.get(name)!.push(variable);
+
+                currentScriptStart = lineNumber;
+                return;
+            }
+
+            if (Constants.ScriptCloseRegex.test(lineText)) {
+                if (currentScriptStart === undefined) {
+                    diagnostics.push(this.createDiagnostic(lineNumber, lineText.length, 'Unexpected script block closing marker.', DiagnosticSeverity.Error));
                 } else {
-                    vars.set(name, [variable]);
+                    currentScriptStart = undefined;
                 }
             }
         });
 
-        this.fileVariableReferenceCache.set(document, vars);
-
-        return vars;
+        if (currentScriptStart !== undefined) {
+            const lineText = lines[currentScriptStart];
+            diagnostics.push(this.createDiagnostic(currentScriptStart, lineText.length, 'Unclosed script block. Expected a closing `%}` line.', DiagnosticSeverity.Error));
+        }
     }
 
-    private findPromptVariableDefinitions(document: TextDocument): Map<string, PromptVariableDefinitionWithRange[]> {
-        const defs = new Map<string, PromptVariableDefinitionWithRange[]>();
-        const rawLines = document.getText().split(Constants.LineSplitterRegex);
-        const requestRanges = Selector.getRequestRanges(rawLines, { ignoreCommentLine: false });
-        for (const [start, end] of requestRanges) {
-            const scopedLines = rawLines.slice(start, end + 1);
-            for (const line of scopedLines) {
-                const matched = line.match(Constants.PromptCommentRegex);
-                if (matched) {
-                    const name = matched[1];
-                    if (defs.has(name)) {
-                        defs.get(name)!.push({ name, range: [start, end] });
-                    } else {
-                        defs.set(name, [{ name, range: [start, end] }]);
-                    }
-                }
+    private validateVariables(lines: string[], diagnostics: Diagnostic[]): void {
+        lines.forEach((lineText, lineNumber) => {
+            const openingCount = this.countOccurrences(lineText, '{{');
+            const closingCount = this.countOccurrences(lineText, '}}');
+            if (openingCount !== closingCount) {
+                diagnostics.push(this.createDiagnostic(lineNumber, lineText.length, 'Unbalanced variable braces in this line.', DiagnosticSeverity.Warning));
+            }
+        });
+    }
+
+    private validateRequestBlock(lines: string[], startLine: number, endLine: number, diagnostics: Diagnostic[]): void {
+        const requestLineIndex = this.findRequestLine(lines, startLine, endLine);
+        if (requestLineIndex === undefined) {
+            const hasMeaningfulContent = lines.slice(startLine, endLine + 1).some(lineText => lineText.trim() !== '');
+            if (hasMeaningfulContent) {
+                diagnostics.push(this.createDiagnostic(startLine, lines[startLine].length, 'Request block does not contain a valid request line.', DiagnosticSeverity.Warning));
+            }
+            return;
+        }
+
+        const requestLine = lines[requestLineIndex];
+        if (!Constants.RequestLineRegex.test(requestLine)) {
+            diagnostics.push(this.createDiagnostic(requestLineIndex, requestLine.length, 'Invalid request line.', DiagnosticSeverity.Error));
+            return;
+        }
+
+        let headerLineIndex = requestLineIndex + 1;
+        while (headerLineIndex <= endLine) {
+            const headerLine = lines[headerLineIndex];
+            if (headerLine.trim() === '') {
+                break;
+            }
+
+            if (Selector.isCommentLine(headerLine) || Constants.ScriptInlineRegex.test(headerLine)) {
+                headerLineIndex++;
+                continue;
+            }
+
+            if (Constants.ScriptStartRegex.test(headerLine)) {
+                headerLineIndex = this.findScriptEnd(lines, headerLineIndex, endLine) + 1;
+                continue;
+            }
+
+            if (this.isUrlContinuation(headerLine) || Constants.HeaderLineRegex.test(headerLine)) {
+                headerLineIndex++;
+                continue;
+            }
+
+            diagnostics.push(this.createDiagnostic(headerLineIndex, headerLine.length, 'Unexpected line in request headers. Expected a header, URL continuation, or blank line.', DiagnosticSeverity.Warning));
+            headerLineIndex++;
+        }
+    }
+
+    private findRequestLine(lines: string[], startLine: number, endLine: number): number | undefined {
+        let lineIndex = startLine;
+        while (lineIndex <= endLine) {
+            const currentLine = lines[lineIndex];
+            if (currentLine.trim() === '' || Selector.isCommentLine(currentLine) || Selector.isFileVariableDefinitionLine(currentLine)) {
+                lineIndex++;
+                continue;
+            }
+
+            if (Constants.MetadataLineRegex.test(currentLine)) {
+                lineIndex++;
+                continue;
+            }
+
+            if (Constants.ScriptInlineRegex.test(currentLine)) {
+                lineIndex++;
+                continue;
+            }
+
+            if (Constants.ScriptStartRegex.test(currentLine)) {
+                lineIndex = this.findScriptEnd(lines, lineIndex, endLine) + 1;
+                continue;
+            }
+
+            if (Constants.ResponseRedirectRegex.test(currentLine)) {
+                lineIndex++;
+                continue;
+            }
+
+            return lineIndex;
+        }
+
+        return undefined;
+    }
+
+    private findScriptEnd(lines: string[], startLine: number, endLine: number): number {
+        for (let lineIndex = startLine + 1; lineIndex <= endLine; lineIndex++) {
+            if (Constants.ScriptCloseRegex.test(lines[lineIndex])) {
+                return lineIndex;
             }
         }
-        return defs;
+
+        return endLine;
     }
-    private hasPromptVariableDefintion(defs: Map<string, PromptVariableDefinitionWithRange[]>, variable: VariableWithPosition): boolean {
-        const { name, begin, end } = variable;
-        return defs.get(name)?.some(({ name, range: [rangeStart, rangeEnd] }) => {
-            return name === name
-                && rangeStart <= begin.line
-                && end.line <= rangeEnd;
-        }) || false;
+
+    private isUrlContinuation(lineText: string): boolean {
+        return /^\s+[/?&].*$/.test(lineText);
+    }
+
+    private countOccurrences(lineText: string, tokenText: string): number {
+        return lineText.split(tokenText).length - 1;
+    }
+
+    private createDiagnostic(lineNumber: number, lineLength: number, message: string, severity: DiagnosticSeverity): Diagnostic {
+        const safeLength = Math.max(1, lineLength);
+        return new Diagnostic(
+            new Range(new Position(lineNumber, 0), new Position(lineNumber, safeLength)),
+            message,
+            severity
+        );
     }
 }

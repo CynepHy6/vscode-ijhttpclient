@@ -16,6 +16,15 @@
         "esModuleInterop": true,
         "rootDir": "."
     },
+    "include": [
+        "src/extension.ts",
+        "src/common/**/*.ts",
+        "src/ijhttp/**/*.ts",
+        "src/providers/customVariableDiagnosticsProvider.ts",
+        "src/providers/httpCodeLensProvider.ts",
+        "src/utils/dispose.ts",
+        "src/utils/selector.ts"
+    ],
     "exclude": [
         "node_modules",
         ".vscode-test"
