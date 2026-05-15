@@ -15,11 +15,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/CynepHy6/vdcode-ijhttpclient.git"
+    "url": "https://github.com/CynepHy6/vscode-ijhttpclient.git"
   },
-  "homepage": "https://github.com/CynepHy6/vdcode-ijhttpclient",
+  "homepage": "https://github.com/CynepHy6/vscode-ijhttpclient",
   "bugs": {
-    "url": "https://github.com/CynepHy6/vdcode-ijhttpclient/issues"
+    "url": "https://github.com/CynepHy6/vscode-ijhttpclient/issues"
   },
   "engines": {
     "vscode": "^1.81.0"
