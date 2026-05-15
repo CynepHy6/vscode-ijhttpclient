@@ -1,193 +1,193 @@
 {
-  "name": "ijhttp-client",
-  "displayName": "ijhttp Client",
-  "description": "JetBrains HTTP Client support for VS Code/Cursor via installed ijhttp.",
-  "version": "1.0.0",
-  "publisher": "hy6",
-  "author": {
-    "name": "hy6"
-  },
-  "icon": "images/ijhttp-icon.png",
-  "galleryBanner": {
-    "color": "#111827",
-    "theme": "dark"
-  },
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/CynepHy6/vscode-ijhttpclient.git"
-  },
-  "homepage": "https://github.com/CynepHy6/vscode-ijhttpclient",
-  "bugs": {
-    "url": "https://github.com/CynepHy6/vscode-ijhttpclient/issues"
-  },
-  "engines": {
-    "vscode": "^1.81.0"
-  },
-  "categories": [
-    "Programming Languages",
-    "Linters",
-    "Other"
-  ],
-  "keywords": [
-    "ijhttp",
-    "jetbrains",
-    "http",
-    "http client",
-    "cursor",
-    "vscode"
-  ],
-  "main": "./dist/extension",
-  "contributes": {
-    "languages": [
-      {
-        "id": "http",
-        "aliases": [
-          "HTTP",
-          "Http",
-          "http"
-        ],
-        "extensions": [
-          ".http"
-        ],
-        "firstLine": "^\\s*((GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE|LOCK|UNLOCK|PROPFIND|PROPPATCH|COPY|MOVE|MKCOL|MKCALENDAR|ACL|SEARCH|BIND|REBIND|UNBIND|LINK|UNLINK|MERGE|PURGE|REPORT|MKACTIVITY|CHECKOUT|MSEARCH|NOTIFY|SUBSCRIBE|UNSUBSCRIBE)\\s+\\S+|https?://\\S+|wss?://\\S+)",
-        "configuration": "./language-configuration.json"
-      }
-    ],
-    "grammars": [
-      {
-        "language": "http",
-        "scopeName": "source.http",
-        "path": "./syntaxes/http.tmLanguage.json"
-      }
-    ],
-    "snippets": [
-      {
-        "language": "http",
-        "path": "./snippets/http.json"
-      }
-    ],
-    "commands": [
-      {
-        "command": "ijhttp-client.runCurrentRequest",
-        "title": "Run Current Request",
-        "category": "ijhttp Client"
-      },
-      {
-        "command": "ijhttp-client.checkSyntax",
-        "title": "Check Syntax",
-        "category": "ijhttp Client"
-      },
-      {
-        "command": "ijhttp-client.showOutput",
-        "title": "Show Output",
-        "category": "ijhttp Client"
-      },
-      {
-        "command": "ijhttp-client.selectEnvironment",
-        "title": "Select Environment",
-        "category": "ijhttp Client"
-      }
-    ],
-    "menus": {
-      "editor/context": [
-        {
-          "command": "ijhttp-client.runCurrentRequest",
-          "when": "editorTextFocus && editorLangId == http",
-          "group": "ijhttp-client@1"
-        },
-        {
-          "command": "ijhttp-client.checkSyntax",
-          "when": "editorTextFocus && editorLangId == http",
-          "group": "ijhttp-client@2"
-        }
-      ]
+    "name": "ijhttp-client",
+    "displayName": "ijhttp Client",
+    "description": "JetBrains HTTP Client support for VS Code/Cursor via installed ijhttp.",
+    "version": "1.0.1",
+    "publisher": "hy6",
+    "author": {
+        "name": "hy6"
     },
-    "keybindings": [
-      {
-        "command": "ijhttp-client.runCurrentRequest",
-        "key": "ctrl+alt+r",
-        "mac": "cmd+alt+r",
-        "when": "editorTextFocus && editorLangId == 'http'"
-      },
-      {
-        "command": "ijhttp-client.checkSyntax",
-        "key": "ctrl+alt+k",
-        "mac": "cmd+alt+k",
-        "when": "editorTextFocus && editorLangId == 'http'"
-      }
-    ],
-    "configuration": {
-      "type": "object",
-      "title": "ijhttp Client",
-      "properties": {
-        "ijhttp-client.ijhttpPath": {
-          "type": "string",
-          "default": "ijhttp",
-          "scope": "resource",
-          "description": "Path to the installed ijhttp executable."
-        },
-        "ijhttp-client.environment": {
-          "type": "string",
-          "default": "",
-          "scope": "resource",
-          "description": "Default ijhttp environment name."
-        },
-        "ijhttp-client.envFile": {
-          "type": "string",
-          "default": "",
-          "scope": "resource",
-          "description": "Optional path to http-client.env.json. Empty value enables auto-discovery."
-        },
-        "ijhttp-client.privateEnvFile": {
-          "type": "string",
-          "default": "",
-          "scope": "resource",
-          "description": "Optional path to http-client.private.env.json. Empty value enables auto-discovery."
-        },
-        "ijhttp-client.logLevel": {
-          "type": "string",
-          "enum": [
-            "BASIC",
-            "HEADERS",
-            "VERBOSE"
-          ],
-          "default": "BASIC",
-          "scope": "resource",
-          "description": "ijhttp CLI log level."
-        },
-        "ijhttp-client.enableRunCodeLens": {
-          "type": "boolean",
-          "default": true,
-          "scope": "resource",
-          "description": "Enable or disable request CodeLens in .http files."
-        }
-      }
+    "icon": "images/ijhttp-icon.png",
+    "galleryBanner": {
+        "color": "#111827",
+        "theme": "dark"
     },
-    "configurationDefaults": {
-      "[http]": {
-        "editor.quickSuggestions": {
-          "other": true,
-          "comments": false,
-          "strings": true
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/CynepHy6/vscode-ijhttpclient.git"
+    },
+    "homepage": "https://github.com/CynepHy6/vscode-ijhttpclient",
+    "bugs": {
+        "url": "https://github.com/CynepHy6/vscode-ijhttpclient/issues"
+    },
+    "engines": {
+        "vscode": "^1.81.0"
+    },
+    "categories": [
+        "Programming Languages",
+        "Linters",
+        "Other"
+    ],
+    "keywords": [
+        "ijhttp",
+        "jetbrains",
+        "http",
+        "http client",
+        "cursor",
+        "vscode"
+    ],
+    "main": "./dist/extension",
+    "contributes": {
+        "languages": [
+            {
+                "id": "http",
+                "aliases": [
+                    "HTTP",
+                    "Http",
+                    "http"
+                ],
+                "extensions": [
+                    ".http"
+                ],
+                "firstLine": "^\\s*((GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE|LOCK|UNLOCK|PROPFIND|PROPPATCH|COPY|MOVE|MKCOL|MKCALENDAR|ACL|SEARCH|BIND|REBIND|UNBIND|LINK|UNLINK|MERGE|PURGE|REPORT|MKACTIVITY|CHECKOUT|MSEARCH|NOTIFY|SUBSCRIBE|UNSUBSCRIBE)\\s+\\S+|https?://\\S+|wss?://\\S+)",
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "http",
+                "scopeName": "source.http",
+                "path": "./syntaxes/http.tmLanguage.json"
+            }
+        ],
+        "snippets": [
+            {
+                "language": "http",
+                "path": "./snippets/http.json"
+            }
+        ],
+        "commands": [
+            {
+                "command": "ijhttp-client.runCurrentRequest",
+                "title": "Run Current Request",
+                "category": "ijhttp Client"
+            },
+            {
+                "command": "ijhttp-client.checkSyntax",
+                "title": "Check Syntax",
+                "category": "ijhttp Client"
+            },
+            {
+                "command": "ijhttp-client.showOutput",
+                "title": "Show Output",
+                "category": "ijhttp Client"
+            },
+            {
+                "command": "ijhttp-client.selectEnvironment",
+                "title": "Select Environment",
+                "category": "ijhttp Client"
+            }
+        ],
+        "menus": {
+            "editor/context": [
+                {
+                    "command": "ijhttp-client.runCurrentRequest",
+                    "when": "editorTextFocus && editorLangId == http",
+                    "group": "ijhttp-client@1"
+                },
+                {
+                    "command": "ijhttp-client.checkSyntax",
+                    "when": "editorTextFocus && editorLangId == http",
+                    "group": "ijhttp-client@2"
+                }
+            ]
+        },
+        "keybindings": [
+            {
+                "command": "ijhttp-client.runCurrentRequest",
+                "key": "ctrl+alt+r",
+                "mac": "cmd+alt+r",
+                "when": "editorTextFocus && editorLangId == 'http'"
+            },
+            {
+                "command": "ijhttp-client.checkSyntax",
+                "key": "ctrl+alt+k",
+                "mac": "cmd+alt+k",
+                "when": "editorTextFocus && editorLangId == 'http'"
+            }
+        ],
+        "configuration": {
+            "type": "object",
+            "title": "ijhttp Client",
+            "properties": {
+                "ijhttp-client.ijhttpPath": {
+                    "type": "string",
+                    "default": "ijhttp",
+                    "scope": "resource",
+                    "description": "Path to the installed ijhttp executable."
+                },
+                "ijhttp-client.environment": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "resource",
+                    "description": "Default ijhttp environment name."
+                },
+                "ijhttp-client.envFile": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "resource",
+                    "description": "Optional path to http-client.env.json. Empty value enables auto-discovery."
+                },
+                "ijhttp-client.privateEnvFile": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "resource",
+                    "description": "Optional path to http-client.private.env.json. Empty value enables auto-discovery."
+                },
+                "ijhttp-client.logLevel": {
+                    "type": "string",
+                    "enum": [
+                        "BASIC",
+                        "HEADERS",
+                        "VERBOSE"
+                    ],
+                    "default": "BASIC",
+                    "scope": "resource",
+                    "description": "ijhttp CLI log level."
+                },
+                "ijhttp-client.enableRunCodeLens": {
+                    "type": "boolean",
+                    "default": true,
+                    "scope": "resource",
+                    "description": "Enable or disable request CodeLens in .http files."
+                }
+            }
+        },
+        "configurationDefaults": {
+            "[http]": {
+                "editor.quickSuggestions": {
+                    "other": true,
+                    "comments": false,
+                    "strings": true
+                }
+            }
         }
-      }
-    }
-  },
-  "scripts": {
-    "vscode:prepublish": "webpack --mode production",
-    "webpack": "webpack --mode development",
-    "watch": "webpack --mode development --watch",
-    "tslint": "tslint --project tsconfig.json"
-  },
-  "devDependencies": {
-    "@types/node": "^18.0.0",
-    "@types/vscode": "^1.81.0",
-    "ts-loader": "^7.0.5",
-    "tslint": "^6.1.2",
-    "typescript": "^5.4.2",
-    "webpack": "^5.75.0",
-    "webpack-cli": "^5.0.1"
-  },
-  "dependencies": {}
+    },
+    "scripts": {
+        "vscode:prepublish": "webpack --mode production",
+        "webpack": "webpack --mode development",
+        "watch": "webpack --mode development --watch",
+        "tslint": "tslint --project tsconfig.json"
+    },
+    "devDependencies": {
+        "@types/node": "^18.0.0",
+        "@types/vscode": "^1.81.0",
+        "ts-loader": "^7.0.5",
+        "tslint": "^6.1.2",
+        "typescript": "^5.4.2",
+        "webpack": "^5.75.0",
+        "webpack-cli": "^5.0.1"
+    },
+    "dependencies": {}
 }
