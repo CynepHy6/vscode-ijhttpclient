@@ -749,7 +749,8 @@ export class IjHttpCliRunner implements Disposable {
     }
 
     private buildTemporaryRequestText(requestBlockText: string): string {
-        const normalizedBlockText = this.normalizeBlockText(requestBlockText).replace(/\s+$/, '');
+        const sanitizedRequestText = Selector.sanitizeExecutableText(requestBlockText);
+        const normalizedBlockText = this.normalizeBlockText(sanitizedRequestText).replace(/\s+$/, '');
         return `${normalizedBlockText}\n`;
     }
 
@@ -928,7 +929,7 @@ export class IjHttpCliRunner implements Disposable {
     }
 
     private buildTemporaryDocumentText(targetDocument: TextDocument): string {
-        return this.normalizeBlockText(targetDocument.getText());
+        return this.normalizeBlockText(Selector.sanitizeExecutableText(targetDocument.getText()));
     }
 
     private isCaptureNoiseLine(outputLine: string): boolean {

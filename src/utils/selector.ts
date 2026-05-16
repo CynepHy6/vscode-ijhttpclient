@@ -85,6 +85,43 @@ export class Selector {
         return requestRanges;
     }
 
+    public static sanitizeExecutableText(sourceText: string): string {
+        const sourceLines = sourceText.split(Constants.LineSplitterRegex);
+        const sanitizedLines: string[] = [];
+        let insideScriptBlock = false;
+
+        for (const sourceLine of sourceLines) {
+            if (insideScriptBlock) {
+                sanitizedLines.push(sourceLine);
+                if (Constants.ScriptCloseRegex.test(sourceLine)) {
+                    insideScriptBlock = false;
+                }
+                continue;
+            }
+
+            if (Constants.ScriptInlineRegex.test(sourceLine)) {
+                sanitizedLines.push(sourceLine);
+                continue;
+            }
+
+            if (Constants.ScriptStartRegex.test(sourceLine)) {
+                sanitizedLines.push(sourceLine);
+                insideScriptBlock = true;
+                continue;
+            }
+
+            if (Constants.DelimiterLineRegex.test(sourceLine)
+                || Constants.MetadataLineRegex.test(sourceLine)
+                || Constants.FileVariableDefinitionRegex.test(sourceLine)
+                || Constants.ResponseRedirectRegex.test(sourceLine)
+                || !this.isCommentLine(sourceLine)) {
+                sanitizedLines.push(sourceLine);
+            }
+        }
+
+        return sanitizedLines.join(EOL);
+    }
+
     public static isCommentLine(line: string): boolean {
         return Constants.CommentLineRegex.test(line);
     }

@@ -2,7 +2,7 @@
     "name": "ijhttp-client",
     "displayName": "ijhttp Client",
     "description": "JetBrains HTTP Client support for VS Code/Cursor via installed ijhttp.",
-    "version": "1.1.5",
+    "version": "1.1.6",
     "publisher": "hy6",
     "author": {
         "name": "hy6"
@@ -201,19 +201,21 @@
         }
     },
     "scripts": {
+        "test": "vitest run",
+        "test:watch": "vitest",
         "vscode:prepublish": "webpack --mode production",
         "webpack": "webpack --mode development",
         "watch": "webpack --mode development --watch",
         "tslint": "tslint --project tsconfig.json"
     },
     "devDependencies": {
-        "@types/node": "^18.0.0",
+        "@types/node": "^25.8.0",
         "@types/vscode": "^1.81.0",
         "ts-loader": "^7.0.5",
         "tslint": "^6.1.2",
         "typescript": "^5.4.2",
+        "vitest": "^4.1.6",
         "webpack": "^5.75.0",
         "webpack-cli": "^5.0.1"
-    },
-    "dependencies": {}
+    }
 }
