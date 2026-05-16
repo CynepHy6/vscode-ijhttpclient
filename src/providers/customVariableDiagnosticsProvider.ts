@@ -192,7 +192,9 @@ export class IjHttpDiagnosticsProvider implements Disposable {
     private validateRequestBlock(lines: string[], startLine: number, endLine: number, diagnostics: Diagnostic[]): void {
         const requestLineIndex = this.findRequestLine(lines, startLine, endLine);
         if (requestLineIndex === undefined) {
-            const hasMeaningfulContent = lines.slice(startLine, endLine + 1).some(lineText => lineText.trim() !== '');
+            const hasMeaningfulContent = lines
+                .slice(startLine, endLine + 1)
+                .some(lineText => this.isMeaningfulNonRequestLine(lineText));
             if (hasMeaningfulContent) {
                 diagnostics.push(this.createDiagnostic(startLine, lines[startLine].length, 'Request block does not contain a valid request line.', DiagnosticSeverity.Warning));
             }
@@ -279,6 +281,22 @@ export class IjHttpDiagnosticsProvider implements Disposable {
 
     private isUrlContinuation(lineText: string): boolean {
         return /^\s+[/?&].*$/.test(lineText);
+    }
+
+    private isMeaningfulNonRequestLine(lineText: string): boolean {
+        if (lineText.trim() === '') {
+            return false;
+        }
+
+        if (Selector.isCommentLine(lineText) || Selector.isFileVariableDefinitionLine(lineText)) {
+            return false;
+        }
+
+        if (Constants.MetadataLineRegex.test(lineText)) {
+            return false;
+        }
+
+        return true;
     }
 
     private countOccurrences(lineText: string, tokenText: string): number {
