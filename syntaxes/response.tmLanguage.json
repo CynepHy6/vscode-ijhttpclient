@@ -1,0 +1,60 @@
+{
+    "scopeName": "source.ijhttp-response",
+    "name": "ijhttp-response",
+    "patterns": [
+        {
+            "include": "#request-banner"
+        },
+        {
+            "include": "#request-response-marker"
+        },
+        {
+            "include": "#response-summary"
+        },
+        {
+            "include": "source.http"
+        }
+    ],
+    "repository": {
+        "request-banner": {
+            "patterns": [
+                {
+                    "match": "^\\s*(Request\\s+'#\\d+')\\s+(.*)$",
+                    "captures": {
+                        "1": {
+                            "name": "entity.name.section.http"
+                        },
+                        "2": {
+                            "name": "string.other.http"
+                        }
+                    },
+                    "name": "meta.request.banner.ijhttp-response"
+                }
+            ]
+        },
+        "request-response-marker": {
+            "patterns": [
+                {
+                    "match": "^\\s*(= request =>|<= response =)\\s*$",
+                    "name": "keyword.control.http"
+                }
+            ]
+        },
+        "response-summary": {
+            "patterns": [
+                {
+                    "match": "^\\s*(Response code:)(.*)$",
+                    "captures": {
+                        "1": {
+                            "name": "entity.name.section.http"
+                        },
+                        "2": {
+                            "name": "string.other.http"
+                        }
+                    },
+                    "name": "meta.response.summary.ijhttp-response"
+                }
+            ]
+        }
+    }
+}

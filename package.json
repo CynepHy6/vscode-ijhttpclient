@@ -2,7 +2,7 @@
     "name": "ijhttp-client",
     "displayName": "ijhttp Client",
     "description": "JetBrains HTTP Client support for VS Code/Cursor via installed ijhttp.",
-    "version": "1.1.0",
+    "version": "1.1.5",
     "publisher": "hy6",
     "author": {
         "name": "hy6"
@@ -52,6 +52,17 @@
                 ],
                 "firstLine": "^\\s*((GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT|TRACE|LOCK|UNLOCK|PROPFIND|PROPPATCH|COPY|MOVE|MKCOL|MKCALENDAR|ACL|SEARCH|BIND|REBIND|UNBIND|LINK|UNLINK|MERGE|PURGE|REPORT|MKACTIVITY|CHECKOUT|MSEARCH|NOTIFY|SUBSCRIBE|UNSUBSCRIBE)\\s+\\S+|https?://\\S+|wss?://\\S+)",
                 "configuration": "./language-configuration.json"
+            },
+            {
+                "id": "ijhttp-response",
+                "aliases": [
+                    "ijhttp Response",
+                    "HTTP Response Dump"
+                ],
+                "extensions": [
+                    ".response"
+                ],
+                "configuration": "./language-configuration.json"
             }
         ],
         "grammars": [
@@ -59,6 +70,11 @@
                 "language": "http",
                 "scopeName": "source.http",
                 "path": "./syntaxes/http.tmLanguage.json"
+            },
+            {
+                "language": "ijhttp-response",
+                "scopeName": "source.ijhttp-response",
+                "path": "./syntaxes/response.tmLanguage.json"
             }
         ],
         "snippets": [

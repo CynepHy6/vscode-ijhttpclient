@@ -25,7 +25,7 @@ Without `ijhttp`, the extension still provides:
 - runs all request blocks from the current file through system `ijhttp`
 - auto-discovers `http-client.env.json` and `http-client.private.env.json`
 - supports common JetBrains HTTP Client constructs such as `# @name`, `{{variables}}`, pre-request scripts, and response-handler scripts
-- saves response bodies into a local `.response/` folder and appends history comments like `# <> ./.response/...` below executed requests
+- saves full HTTP response dumps as `*.response` files in a local `.response/` folder and appends history comments like `# <> ./.response/...` below executed requests
 
 ## Usage
 

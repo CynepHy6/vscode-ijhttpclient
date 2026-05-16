@@ -28,12 +28,17 @@ interface IjHttpRuntimeSettings {
 
 interface ResponseCaptureContext {
     captureFilePath: string;
-    captureRelativePath: string;
 }
 
 interface ResponseMetadata {
     responseStatusCode?: number;
     responseContentType?: string;
+}
+
+interface RequestCapture extends ResponseMetadata {
+    outputLines: string[];
+    responseLines: string[];
+    isCapturingResponse: boolean;
 }
 
 interface ResponseHistoryPlan {
@@ -43,7 +48,9 @@ interface ResponseHistoryPlan {
 
 interface IjHttpRunResult extends ResponseMetadata {
     exitCode: number;
-    responseMetadatas: ResponseMetadata[];
+    requestCaptures: RequestCapture[];
+    activeRequestCapture?: RequestCapture;
+    outputLines: string[];
 }
 
 interface EnvironmentContext {
@@ -93,7 +100,7 @@ export class IjHttpCliRunner implements Disposable {
 
         const temporaryFile = this.buildTemporaryFilePath(targetDocument.fileName, 'current-request');
         const responseCaptureContext = await this.prepareResponseCapture(targetDocument, requestBlock.text);
-        const temporaryRequestText = this.buildTemporaryRequestText(requestBlock.text, responseCaptureContext?.captureRelativePath);
+        const temporaryRequestText = this.buildTemporaryRequestText(requestBlock.text);
         await fileSystem.writeFile(temporaryFile, temporaryRequestText, 'utf8');
 
         const argumentList = this.buildArgumentList(runtimeSettings, temporaryFile, !!responseCaptureContext);
@@ -105,8 +112,8 @@ export class IjHttpCliRunner implements Disposable {
 
         try {
             const runResult = await this.runProcess(runtimeSettings.executablePath, argumentList, workingDirectory);
+            await this.persistResponseHistory(targetDocument, requestBlock.range, responseCaptureContext, runResult);
             if (runResult.exitCode === 0) {
-                await this.persistResponseHistory(targetDocument, requestBlock.range, responseCaptureContext, runResult);
                 this.lastRunState = 'success';
                 await this.refreshStatus(targetDocument);
                 window.showInformationMessage('ijhttp finished successfully.');
@@ -141,7 +148,7 @@ export class IjHttpCliRunner implements Disposable {
 
         const responseHistoryPlans = await this.prepareResponseHistoryPlans(targetDocument, requestRanges);
         const temporaryFile = this.buildTemporaryFilePath(targetDocument.fileName, 'all-requests');
-        await fileSystem.writeFile(temporaryFile, this.buildTemporaryDocumentText(targetDocument, responseHistoryPlans), 'utf8');
+        await fileSystem.writeFile(temporaryFile, this.buildTemporaryDocumentText(targetDocument), 'utf8');
 
         const needsResponseMetadata = responseHistoryPlans.some(plan => !!plan.responseCaptureContext);
         const argumentList = this.buildArgumentList(runtimeSettings, temporaryFile, needsResponseMetadata);
@@ -153,8 +160,8 @@ export class IjHttpCliRunner implements Disposable {
 
         try {
             const runResult = await this.runProcess(runtimeSettings.executablePath, argumentList, workingDirectory);
+            await this.persistResponseHistories(targetDocument, responseHistoryPlans, runResult);
             if (runResult.exitCode === 0) {
-                await this.persistResponseHistories(targetDocument, responseHistoryPlans, runResult);
                 this.lastRunState = 'success';
                 await this.refreshStatus(targetDocument);
                 window.showInformationMessage(`ijhttp finished successfully for ${requestRanges.length} request block(s).`);
@@ -543,7 +550,7 @@ export class IjHttpCliRunner implements Disposable {
             const processHandle = spawn(executablePath, argumentList, { cwd: workingDirectory });
             let stdoutRemainder = '';
             let stderrRemainder = '';
-            const runResult: IjHttpRunResult = { exitCode: 1, responseMetadatas: [] };
+            const runResult: IjHttpRunResult = { exitCode: 1, requestCaptures: [], outputLines: [] };
 
             processHandle.stdout.on('data', chunk => {
                 stdoutRemainder = this.consumeProcessOutput(chunk.toString(), stdoutRemainder, runResult);
@@ -590,8 +597,19 @@ export class IjHttpCliRunner implements Disposable {
     }
 
     private consumeOutputLine(outputLine: string, runResult: IjHttpRunResult): void {
+        this.captureGeneralOutput(outputLine, runResult);
+        this.captureRequestOutput(outputLine, runResult);
         this.captureResponseMetadata(outputLine, runResult);
         this.appendOutputLine(outputLine);
+    }
+
+    private captureGeneralOutput(outputLine: string, runResult: IjHttpRunResult): void {
+        const trimmedLine = outputLine.trimEnd();
+        if (!trimmedLine.trim() || this.isCaptureNoiseLine(trimmedLine)) {
+            return;
+        }
+
+        runResult.outputLines.push(trimmedLine);
     }
 
     private captureResponseMetadata(outputLine: string, runResult: IjHttpRunResult): void {
@@ -600,7 +618,9 @@ export class IjHttpCliRunner implements Disposable {
         if (statusMatch) {
             const responseStatusCode = Number(statusMatch[1]);
             runResult.responseStatusCode = responseStatusCode;
-            runResult.responseMetadatas.push({ responseStatusCode });
+            if (runResult.activeRequestCapture) {
+                runResult.activeRequestCapture.responseStatusCode = responseStatusCode;
+            }
             return;
         }
 
@@ -608,11 +628,68 @@ export class IjHttpCliRunner implements Disposable {
         if (contentTypeMatch) {
             const responseContentType = contentTypeMatch[1].trim().toLowerCase();
             runResult.responseContentType = responseContentType;
-            const currentResponseMetadata = runResult.responseMetadatas[runResult.responseMetadatas.length - 1];
-            if (currentResponseMetadata) {
-                currentResponseMetadata.responseContentType = responseContentType;
+            if (runResult.activeRequestCapture) {
+                runResult.activeRequestCapture.responseContentType = responseContentType;
             }
         }
+    }
+
+    private captureRequestOutput(outputLine: string, runResult: IjHttpRunResult): void {
+        const trimmedLine = outputLine.trimEnd();
+        const requestStartMatch = /^Request '#(\d+)'\b/.exec(trimmedLine);
+        if (requestStartMatch) {
+            const requestIndex = Number(requestStartMatch[1]) - 1;
+            const requestCapture = this.ensureRequestCapture(runResult, requestIndex);
+            requestCapture.outputLines.push(trimmedLine);
+            requestCapture.isCapturingResponse = false;
+            runResult.activeRequestCapture = requestCapture;
+            return;
+        }
+
+        const activeRequestCapture = runResult.activeRequestCapture;
+        if (!activeRequestCapture) {
+            return;
+        }
+
+        if (/^= request =>$/i.test(trimmedLine)) {
+            activeRequestCapture.isCapturingResponse = false;
+            return;
+        }
+
+        if (/^<= response =$/i.test(trimmedLine)) {
+            activeRequestCapture.isCapturingResponse = true;
+            return;
+        }
+
+        if (this.isCaptureNoiseLine(trimmedLine)) {
+            return;
+        }
+
+        if (/^Response code:/i.test(trimmedLine)) {
+            activeRequestCapture.outputLines.push(trimmedLine);
+            activeRequestCapture.isCapturingResponse = false;
+            return;
+        }
+
+        activeRequestCapture.outputLines.push(trimmedLine);
+        if (activeRequestCapture.isCapturingResponse) {
+            activeRequestCapture.responseLines.push(trimmedLine);
+        }
+    }
+
+    private ensureRequestCapture(runResult: IjHttpRunResult, requestIndex: number): RequestCapture {
+        const existingRequestCapture = runResult.requestCaptures[requestIndex];
+        if (existingRequestCapture) {
+            return existingRequestCapture;
+        }
+
+        const requestCapture: RequestCapture = {
+            outputLines: [],
+            responseLines: [],
+            isCapturingResponse: false,
+        };
+        runResult.requestCaptures[requestIndex] = requestCapture;
+        return requestCapture;
     }
 
     private appendOutputLine(outputLine: string): void {
@@ -665,20 +742,15 @@ export class IjHttpCliRunner implements Disposable {
         const responseDirectoryPath = path.join(path.dirname(targetDocument.fileName), '.response');
         await fileSystem.mkdir(responseDirectoryPath, { recursive: true });
 
-        const captureFileName = `.ijhttp-response.${process.pid}.${Date.now()}.body`;
+        const captureFileName = `.ijhttp-response.${process.pid}.${Date.now()}.response`;
         return {
             captureFilePath: path.join(responseDirectoryPath, captureFileName),
-            captureRelativePath: `./${path.posix.join('.response', captureFileName)}`,
         };
     }
 
-    private buildTemporaryRequestText(requestBlockText: string, captureRelativePath?: string): string {
+    private buildTemporaryRequestText(requestBlockText: string): string {
         const normalizedBlockText = this.normalizeBlockText(requestBlockText).replace(/\s+$/, '');
-        if (!captureRelativePath) {
-            return `${normalizedBlockText}\n`;
-        }
-
-        return `${normalizedBlockText}\n\n>>! ${captureRelativePath}\n`;
+        return `${normalizedBlockText}\n`;
     }
 
     private getEffectiveLogLevel(logLevel: string, needsResponseMetadata: boolean): string {
@@ -686,7 +758,7 @@ export class IjHttpCliRunner implements Disposable {
             return logLevel;
         }
 
-        return logLevel === 'BASIC' ? 'HEADERS' : logLevel;
+        return 'VERBOSE';
     }
 
     private async persistResponseHistory(
@@ -699,11 +771,13 @@ export class IjHttpCliRunner implements Disposable {
             return;
         }
 
-        if (!(await this.fileExists(responseCaptureContext.captureFilePath))) {
+        const requestCapture = runResult.requestCaptures[0];
+        const finalHistoryFileName = requestCapture
+            ? await this.finalizeResponseCapture(responseCaptureContext, requestCapture)
+            : await this.finalizeFallbackResponseCapture(responseCaptureContext, runResult);
+        if (!finalHistoryFileName) {
             return;
         }
-
-        const finalHistoryFileName = await this.finalizeResponseCapture(responseCaptureContext, runResult);
         const historyCommentLine = `# <> ./${path.posix.join('.response', finalHistoryFileName)}`;
         await this.appendHistoryComment(targetDocument, requestRange, historyCommentLine);
     }
@@ -720,12 +794,15 @@ export class IjHttpCliRunner implements Disposable {
                 continue;
             }
 
-            if (!(await this.fileExists(responseHistoryPlan.responseCaptureContext.captureFilePath))) {
+            const requestCapture = runResult.requestCaptures[planIndex];
+            if (!requestCapture) {
                 continue;
             }
 
-            const responseMetadata = runResult.responseMetadatas[planIndex] ?? {};
-            const finalHistoryFileName = await this.finalizeResponseCapture(responseHistoryPlan.responseCaptureContext, responseMetadata);
+            const finalHistoryFileName = await this.finalizeResponseCapture(responseHistoryPlan.responseCaptureContext, requestCapture);
+            if (!finalHistoryFileName) {
+                continue;
+            }
             historyEntries.push({
                 requestRange: responseHistoryPlan.requestRange,
                 historyCommentLine: `# <> ./${path.posix.join('.response', finalHistoryFileName)}`,
@@ -738,13 +815,43 @@ export class IjHttpCliRunner implements Disposable {
         }
     }
 
-    private async finalizeResponseCapture(responseCaptureContext: ResponseCaptureContext, responseMetadata: ResponseMetadata): Promise<string> {
-        const responseExtension = this.getResponseFileExtension(responseMetadata.responseContentType);
-        const statusCode = responseMetadata.responseStatusCode ?? 200;
-        const baseFileName = `${this.formatTimestamp(new Date())}.${statusCode}.${responseExtension}`;
+    private async finalizeResponseCapture(responseCaptureContext: ResponseCaptureContext, requestCapture: RequestCapture): Promise<string | undefined> {
+        const responseText = this.buildResponseFileText(requestCapture);
+        if (!responseText) {
+            return undefined;
+        }
+
+        await fileSystem.writeFile(responseCaptureContext.captureFilePath, responseText, 'utf8');
+        const statusLabel = requestCapture.responseStatusCode ? String(requestCapture.responseStatusCode) : 'error';
+        const baseFileName = `${this.formatTimestamp(new Date())}.${statusLabel}.response`;
         const finalFilePath = await this.buildUniqueResponseFilePath(path.dirname(responseCaptureContext.captureFilePath), baseFileName);
         await fileSystem.rename(responseCaptureContext.captureFilePath, finalFilePath);
         return path.basename(finalFilePath);
+    }
+
+    private async finalizeFallbackResponseCapture(responseCaptureContext: ResponseCaptureContext, runResult: IjHttpRunResult): Promise<string | undefined> {
+        const responseText = this.buildFallbackResponseFileText(runResult);
+        if (!responseText) {
+            return undefined;
+        }
+
+        await fileSystem.writeFile(responseCaptureContext.captureFilePath, responseText, 'utf8');
+        const statusLabel = runResult.responseStatusCode ? String(runResult.responseStatusCode) : 'error';
+        const baseFileName = `${this.formatTimestamp(new Date())}.${statusLabel}.response`;
+        const finalFilePath = await this.buildUniqueResponseFilePath(path.dirname(responseCaptureContext.captureFilePath), baseFileName);
+        await fileSystem.rename(responseCaptureContext.captureFilePath, finalFilePath);
+        return path.basename(finalFilePath);
+    }
+
+    private buildResponseFileText(requestCapture: RequestCapture): string {
+        const relevantLines = requestCapture.responseLines.length > 0 ? requestCapture.responseLines : requestCapture.outputLines;
+        const normalizedText = relevantLines.join('\n').trim();
+        return normalizedText ? `${normalizedText}\n` : '';
+    }
+
+    private buildFallbackResponseFileText(runResult: IjHttpRunResult): string {
+        const normalizedText = runResult.outputLines.join('\n').trim();
+        return normalizedText ? `${normalizedText}\n` : '';
     }
 
     private async appendHistoryComment(targetDocument: TextDocument, requestRange: Range, historyCommentLine: string): Promise<void> {
@@ -757,38 +864,6 @@ export class IjHttpCliRunner implements Disposable {
         workspaceEdit.insert(targetDocument.uri, new Position(insertionLine, 0), `${leadingSeparator}${historyCommentLine}${trailingSeparator}`);
         await workspace.applyEdit(workspaceEdit);
         await targetDocument.save();
-    }
-
-    private getResponseFileExtension(contentType?: string): string {
-        if (!contentType) {
-            return 'txt';
-        }
-
-        if (contentType.includes('json')) {
-            return 'json';
-        }
-
-        if (contentType.includes('xml')) {
-            return 'xml';
-        }
-
-        if (contentType === 'text/html') {
-            return 'html';
-        }
-
-        if (contentType.startsWith('text/')) {
-            return 'txt';
-        }
-
-        if (contentType.includes('javascript')) {
-            return 'js';
-        }
-
-        if (contentType.includes('pdf')) {
-            return 'pdf';
-        }
-
-        return 'bin';
     }
 
     private formatTimestamp(dateValue: Date): string {
@@ -852,22 +927,32 @@ export class IjHttpCliRunner implements Disposable {
         return responseHistoryPlans;
     }
 
-    private buildTemporaryDocumentText(targetDocument: TextDocument, responseHistoryPlans: ResponseHistoryPlan[]): string {
-        let temporaryDocumentText = targetDocument.getText();
-        const responseInsertions = responseHistoryPlans
-            .filter((responseHistoryPlan): responseHistoryPlan is ResponseHistoryPlan & { responseCaptureContext: ResponseCaptureContext } =>
-                !!responseHistoryPlan.responseCaptureContext)
-            .map(responseHistoryPlan => ({
-                offset: targetDocument.offsetAt(responseHistoryPlan.requestRange.end),
-                text: `\n\n>>! ${responseHistoryPlan.responseCaptureContext.captureRelativePath}`,
-            }))
-            .sort((leftInsertion, rightInsertion) => rightInsertion.offset - leftInsertion.offset);
+    private buildTemporaryDocumentText(targetDocument: TextDocument): string {
+        return this.normalizeBlockText(targetDocument.getText());
+    }
 
-        for (const responseInsertion of responseInsertions) {
-            temporaryDocumentText = `${temporaryDocumentText.slice(0, responseInsertion.offset)}${responseInsertion.text}${temporaryDocumentText.slice(responseInsertion.offset)}`;
+    private isCaptureNoiseLine(outputLine: string): boolean {
+        if (/setlocale:\s*LC_CTYPE/i.test(outputLine)) {
+            return true;
         }
 
-        return this.normalizeBlockText(temporaryDocumentText);
+        if (/[┌┐└┘├┤┬┴┼│─━]/.test(outputLine)) {
+            return true;
+        }
+
+        if (/^\s*\d+%\s+━+/.test(outputLine)) {
+            return true;
+        }
+
+        if (/^\d+\s+requests completed,/i.test(outputLine)) {
+            return true;
+        }
+
+        if (/^RUN (SUCCESSFUL|FAILED)$/i.test(outputLine)) {
+            return true;
+        }
+
+        return false;
     }
 
     private async removeTemporaryFile(temporaryFile: string): Promise<void> {

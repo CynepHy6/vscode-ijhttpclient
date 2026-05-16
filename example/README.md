@@ -4,7 +4,7 @@
 
 This directory contains small `.http` examples for the current `ijhttp Client` extension.
 
-When you run requests from the extension, it can also create a local `.response/` directory and append history comments like `# <> ./.response/...` below executed requests.
+When you run requests from the extension, it can also create a local `.response/` directory with saved `*.response` full response dumps and append history comments like `# <> ./.response/...` below executed requests.
 
 - `basic/basic-demo.http`:
   basic GET/POST requests, named requests, response-handler tests, local environment file.
