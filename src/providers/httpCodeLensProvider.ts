@@ -12,6 +12,16 @@ export class HttpCodeLensProvider implements CodeLensProvider {
         const lines: string[] = document.getText().split(Constants.LineSplitterRegex);
         const requestRanges: [number, number][] = Selector.getRequestRanges(lines);
 
+        if (requestRanges.length > 0) {
+            const fileRange = new Range(0, 0, 0, 0);
+            const runAllCommand: Command = {
+                arguments: [document],
+                title: 'Run all with ijhttp',
+                command: 'ijhttp-client.runAllRequests'
+            };
+            blocks.push(new CodeLens(fileRange, runAllCommand));
+        }
+
         for (const [blockStart, blockEnd] of requestRanges) {
             const range = new Range(blockStart, 0, blockEnd, 0);
             const cmd: Command = {

@@ -22,6 +22,7 @@
 - подсветка `.http`-файлов
 - определение request-блоков, разделённых `###`
 - запуск текущего request-блока через системный `ijhttp`
+- запуск всех request-блоков текущего файла через системный `ijhttp`
 - автопоиск `http-client.env.json` и `http-client.private.env.json`
 - поддержка типовых конструкций JetBrains HTTP Client: `# @name`, `{{variables}}`, pre-request scripts и response-handler scripts
 - сохранение `body` ответа в локальный каталог `.response/` и добавление под выполненным запросом history-комментариев вида `# <> ./.response/...`
@@ -39,6 +40,12 @@ Accept: application/json
 - CodeLens `Run with ijhttp`
 - команду `ijhttp Client: Run Current Request`
 - shortcut `Ctrl+Alt+R` / `Cmd+Alt+R`
+
+Все request-блоки текущего файла можно запустить через:
+
+- верхний CodeLens `Run all with ijhttp`
+- команду `ijhttp Client: Run All Requests in File`
+- действие в editor context menu `Run All Requests in File`
 
 ## Настройки
 

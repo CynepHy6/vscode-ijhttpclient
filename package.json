@@ -2,7 +2,7 @@
     "name": "ijhttp-client",
     "displayName": "ijhttp Client",
     "description": "JetBrains HTTP Client support for VS Code/Cursor via installed ijhttp.",
-    "version": "1.0.2",
+    "version": "1.1.0",
     "publisher": "hy6",
     "author": {
         "name": "hy6"
@@ -74,6 +74,11 @@
                 "category": "ijhttp Client"
             },
             {
+                "command": "ijhttp-client.runAllRequests",
+                "title": "Run All Requests in File",
+                "category": "ijhttp Client"
+            },
+            {
                 "command": "ijhttp-client.checkSyntax",
                 "title": "Check Syntax",
                 "category": "ijhttp Client"
@@ -95,6 +100,11 @@
                     "command": "ijhttp-client.runCurrentRequest",
                     "when": "editorTextFocus && editorLangId == http",
                     "group": "ijhttp-client@1"
+                },
+                {
+                    "command": "ijhttp-client.runAllRequests",
+                    "when": "editorTextFocus && editorLangId == http",
+                    "group": "ijhttp-client@1.5"
                 },
                 {
                     "command": "ijhttp-client.checkSyntax",

@@ -16,6 +16,9 @@ export async function activate(context: ExtensionContext) {
     context.subscriptions.push(commands.registerCommand('ijhttp-client.runCurrentRequest', async (document?: TextDocument, range?: Range) => {
         await cliRunner.runCurrentRequest(document, range);
     }));
+    context.subscriptions.push(commands.registerCommand('ijhttp-client.runAllRequests', async (document?: TextDocument) => {
+        await cliRunner.runAllRequests(document);
+    }));
     context.subscriptions.push(commands.registerCommand('ijhttp-client.checkSyntax', async () => {
         const activeDocument = window.activeTextEditor?.document;
         if (!activeDocument) {

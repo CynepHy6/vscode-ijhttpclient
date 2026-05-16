@@ -12,8 +12,6 @@ User-Agent: {{userAgent}}
   });
 %}
 
-###
-
 ### createAnything
 # @name createAnything
 POST {{baseUrl}}/anything

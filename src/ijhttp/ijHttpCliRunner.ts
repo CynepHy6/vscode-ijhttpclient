@@ -31,10 +31,19 @@ interface ResponseCaptureContext {
     captureRelativePath: string;
 }
 
-interface IjHttpRunResult {
-    exitCode: number;
+interface ResponseMetadata {
     responseStatusCode?: number;
     responseContentType?: string;
+}
+
+interface ResponseHistoryPlan {
+    requestRange: Range;
+    responseCaptureContext?: ResponseCaptureContext;
+}
+
+interface IjHttpRunResult extends ResponseMetadata {
+    exitCode: number;
+    responseMetadatas: ResponseMetadata[];
 }
 
 interface EnvironmentContext {
@@ -60,15 +69,8 @@ export class IjHttpCliRunner implements Disposable {
     }
 
     public async runCurrentRequest(document?: TextDocument, range?: Range): Promise<void> {
-        const activeEditor = window.activeTextEditor;
-        const targetDocument = document ?? activeEditor?.document;
-        if (!targetDocument || targetDocument.languageId !== 'http') {
-            window.showWarningMessage('Open an HTTP file to run a request with ijhttp.');
-            return;
-        }
-
-        if (targetDocument.uri.scheme !== 'file') {
-            window.showWarningMessage('ijhttp execution is only available for files stored on disk.');
+        const targetDocument = this.getRunnableDocument(document, 'Open an HTTP file to run a request with ijhttp.');
+        if (!targetDocument) {
             return;
         }
 
@@ -84,21 +86,12 @@ export class IjHttpCliRunner implements Disposable {
             return;
         }
 
-        let runtimeSettings: IjHttpRuntimeSettings;
-        try {
-            runtimeSettings = await this.getRuntimeSettings(targetDocument);
-            await this.ensureExecutable(runtimeSettings.executablePath, path.dirname(targetDocument.fileName));
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (message === 'Environment selection was cancelled.') {
-                this.outputChannel.appendLine('ijhttp run cancelled: environment selection was dismissed.');
-                return;
-            }
-
-            throw error;
+        const runtimeSettings = await this.getValidatedRuntimeSettings(targetDocument);
+        if (!runtimeSettings) {
+            return;
         }
 
-        const temporaryFile = this.buildTemporaryFilePath(targetDocument.fileName);
+        const temporaryFile = this.buildTemporaryFilePath(targetDocument.fileName, 'current-request');
         const responseCaptureContext = await this.prepareResponseCapture(targetDocument, requestBlock.text);
         const temporaryRequestText = this.buildTemporaryRequestText(requestBlock.text, responseCaptureContext?.captureRelativePath);
         await fileSystem.writeFile(temporaryFile, temporaryRequestText, 'utf8');
@@ -124,6 +117,54 @@ export class IjHttpCliRunner implements Disposable {
             }
         } finally {
             await this.cleanupResponseCapture(responseCaptureContext);
+            await this.removeTemporaryFile(temporaryFile);
+        }
+    }
+
+    public async runAllRequests(document?: TextDocument): Promise<void> {
+        const targetDocument = this.getRunnableDocument(document, 'Open an HTTP file to run all requests with ijhttp.');
+        if (!targetDocument) {
+            return;
+        }
+
+        const documentLines = targetDocument.getText().split(Constants.LineSplitterRegex);
+        const requestRanges = Selector.getRequestRanges(documentLines);
+        if (requestRanges.length === 0) {
+            window.showWarningMessage('No runnable request blocks were found in the current HTTP file.');
+            return;
+        }
+
+        const runtimeSettings = await this.getValidatedRuntimeSettings(targetDocument);
+        if (!runtimeSettings) {
+            return;
+        }
+
+        const responseHistoryPlans = await this.prepareResponseHistoryPlans(targetDocument, requestRanges);
+        const temporaryFile = this.buildTemporaryFilePath(targetDocument.fileName, 'all-requests');
+        await fileSystem.writeFile(temporaryFile, this.buildTemporaryDocumentText(targetDocument, responseHistoryPlans), 'utf8');
+
+        const needsResponseMetadata = responseHistoryPlans.some(plan => !!plan.responseCaptureContext);
+        const argumentList = this.buildArgumentList(runtimeSettings, temporaryFile, needsResponseMetadata);
+        const workingDirectory = path.dirname(targetDocument.fileName);
+        this.outputChannel.show(true);
+        this.outputChannel.appendLine(`$ ${runtimeSettings.executablePath} ${argumentList.map(item => this.quoteArgument(item)).join(' ')}`);
+        this.lastRunState = 'running';
+        await this.refreshStatus(targetDocument);
+
+        try {
+            const runResult = await this.runProcess(runtimeSettings.executablePath, argumentList, workingDirectory);
+            if (runResult.exitCode === 0) {
+                await this.persistResponseHistories(targetDocument, responseHistoryPlans, runResult);
+                this.lastRunState = 'success';
+                await this.refreshStatus(targetDocument);
+                window.showInformationMessage(`ijhttp finished successfully for ${requestRanges.length} request block(s).`);
+            } else {
+                this.lastRunState = `failed (${runResult.exitCode})`;
+                await this.refreshStatus(targetDocument);
+                window.showErrorMessage(`ijhttp finished with exit code ${runResult.exitCode}.`);
+            }
+        } finally {
+            await this.cleanupResponseHistories(responseHistoryPlans);
             await this.removeTemporaryFile(temporaryFile);
         }
     }
@@ -194,6 +235,38 @@ export class IjHttpCliRunner implements Disposable {
 
         const activeLine = activeEditor.selection.active.line;
         return new Range(activeLine, 0, activeLine, activeEditor.document.lineAt(activeLine).text.length);
+    }
+
+    private getRunnableDocument(document: TextDocument | undefined, warningMessage: string): TextDocument | undefined {
+        const activeEditor = window.activeTextEditor;
+        const targetDocument = document ?? activeEditor?.document;
+        if (!targetDocument || targetDocument.languageId !== 'http') {
+            window.showWarningMessage(warningMessage);
+            return undefined;
+        }
+
+        if (targetDocument.uri.scheme !== 'file') {
+            window.showWarningMessage('ijhttp execution is only available for files stored on disk.');
+            return undefined;
+        }
+
+        return targetDocument;
+    }
+
+    private async getValidatedRuntimeSettings(targetDocument: TextDocument): Promise<IjHttpRuntimeSettings | undefined> {
+        try {
+            const runtimeSettings = await this.getRuntimeSettings(targetDocument);
+            await this.ensureExecutable(runtimeSettings.executablePath, path.dirname(targetDocument.fileName));
+            return runtimeSettings;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message === 'Environment selection was cancelled.') {
+                this.outputChannel.appendLine('ijhttp run cancelled: environment selection was dismissed.');
+                return undefined;
+            }
+
+            throw error;
+        }
     }
 
     private async getRuntimeSettings(targetDocument: TextDocument): Promise<IjHttpRuntimeSettings> {
@@ -437,10 +510,10 @@ export class IjHttpCliRunner implements Disposable {
         return `${IjHttpCliRunner.rememberedEnvironmentPrefix}:${publicEnvironmentFile ?? ''}:${privateEnvironmentFile ?? ''}`;
     }
 
-    private buildTemporaryFilePath(sourceFilePath: string): string {
+    private buildTemporaryFilePath(sourceFilePath: string, suffixLabel: string): string {
         const sourceDirectory = path.dirname(sourceFilePath);
         const sourceName = path.basename(sourceFilePath, path.extname(sourceFilePath));
-        return path.join(sourceDirectory, `.${sourceName}.ijhttp-current-request.${process.pid}.${Date.now()}.http`);
+        return path.join(sourceDirectory, `.${sourceName}.ijhttp-${suffixLabel}.${process.pid}.${Date.now()}.http`);
     }
 
     private normalizeBlockText(blockText: string): string {
@@ -470,7 +543,7 @@ export class IjHttpCliRunner implements Disposable {
             const processHandle = spawn(executablePath, argumentList, { cwd: workingDirectory });
             let stdoutRemainder = '';
             let stderrRemainder = '';
-            const runResult: IjHttpRunResult = { exitCode: 1 };
+            const runResult: IjHttpRunResult = { exitCode: 1, responseMetadatas: [] };
 
             processHandle.stdout.on('data', chunk => {
                 stdoutRemainder = this.consumeProcessOutput(chunk.toString(), stdoutRemainder, runResult);
@@ -525,13 +598,20 @@ export class IjHttpCliRunner implements Disposable {
         const trimmedLine = outputLine.trim();
         const statusMatch = /^HTTP\/\S+\s+(\d{3})\b/i.exec(trimmedLine);
         if (statusMatch) {
-            runResult.responseStatusCode = Number(statusMatch[1]);
+            const responseStatusCode = Number(statusMatch[1]);
+            runResult.responseStatusCode = responseStatusCode;
+            runResult.responseMetadatas.push({ responseStatusCode });
             return;
         }
 
         const contentTypeMatch = /^content-type:\s*([^;]+)(?:;.*)?$/i.exec(trimmedLine);
         if (contentTypeMatch) {
-            runResult.responseContentType = contentTypeMatch[1].trim().toLowerCase();
+            const responseContentType = contentTypeMatch[1].trim().toLowerCase();
+            runResult.responseContentType = responseContentType;
+            const currentResponseMetadata = runResult.responseMetadatas[runResult.responseMetadatas.length - 1];
+            if (currentResponseMetadata) {
+                currentResponseMetadata.responseContentType = responseContentType;
+            }
         }
     }
 
@@ -628,9 +708,39 @@ export class IjHttpCliRunner implements Disposable {
         await this.appendHistoryComment(targetDocument, requestRange, historyCommentLine);
     }
 
-    private async finalizeResponseCapture(responseCaptureContext: ResponseCaptureContext, runResult: IjHttpRunResult): Promise<string> {
-        const responseExtension = this.getResponseFileExtension(runResult.responseContentType);
-        const statusCode = runResult.responseStatusCode ?? 200;
+    private async persistResponseHistories(
+        targetDocument: TextDocument,
+        responseHistoryPlans: ResponseHistoryPlan[],
+        runResult: IjHttpRunResult
+    ): Promise<void> {
+        const historyEntries: Array<{ requestRange: Range; historyCommentLine: string }> = [];
+        for (let planIndex = 0; planIndex < responseHistoryPlans.length; planIndex++) {
+            const responseHistoryPlan = responseHistoryPlans[planIndex];
+            if (!responseHistoryPlan.responseCaptureContext) {
+                continue;
+            }
+
+            if (!(await this.fileExists(responseHistoryPlan.responseCaptureContext.captureFilePath))) {
+                continue;
+            }
+
+            const responseMetadata = runResult.responseMetadatas[planIndex] ?? {};
+            const finalHistoryFileName = await this.finalizeResponseCapture(responseHistoryPlan.responseCaptureContext, responseMetadata);
+            historyEntries.push({
+                requestRange: responseHistoryPlan.requestRange,
+                historyCommentLine: `# <> ./${path.posix.join('.response', finalHistoryFileName)}`,
+            });
+        }
+
+        historyEntries.sort((leftEntry, rightEntry) => rightEntry.requestRange.end.line - leftEntry.requestRange.end.line);
+        for (const historyEntry of historyEntries) {
+            await this.appendHistoryComment(targetDocument, historyEntry.requestRange, historyEntry.historyCommentLine);
+        }
+    }
+
+    private async finalizeResponseCapture(responseCaptureContext: ResponseCaptureContext, responseMetadata: ResponseMetadata): Promise<string> {
+        const responseExtension = this.getResponseFileExtension(responseMetadata.responseContentType);
+        const statusCode = responseMetadata.responseStatusCode ?? 200;
         const baseFileName = `${this.formatTimestamp(new Date())}.${statusCode}.${responseExtension}`;
         const finalFilePath = await this.buildUniqueResponseFilePath(path.dirname(responseCaptureContext.captureFilePath), baseFileName);
         await fileSystem.rename(responseCaptureContext.captureFilePath, finalFilePath);
@@ -711,6 +821,53 @@ export class IjHttpCliRunner implements Disposable {
         }
 
         await this.removeTemporaryFile(responseCaptureContext.captureFilePath);
+    }
+
+    private async cleanupResponseHistories(responseHistoryPlans: ResponseHistoryPlan[]): Promise<void> {
+        for (const responseHistoryPlan of responseHistoryPlans) {
+            await this.cleanupResponseCapture(responseHistoryPlan.responseCaptureContext);
+        }
+    }
+
+    private async prepareResponseHistoryPlans(
+        targetDocument: TextDocument,
+        requestRanges: [number, number][]
+    ): Promise<ResponseHistoryPlan[]> {
+        const responseHistoryPlans: ResponseHistoryPlan[] = [];
+        for (const [requestStartLine, requestEndLine] of requestRanges) {
+            const requestRange = new Range(
+                requestStartLine,
+                0,
+                requestEndLine,
+                targetDocument.lineAt(requestEndLine).text.length
+            );
+            const requestBlockText = targetDocument.getText(requestRange);
+            const responseCaptureContext = await this.prepareResponseCapture(targetDocument, requestBlockText);
+            responseHistoryPlans.push({
+                requestRange,
+                responseCaptureContext,
+            });
+        }
+
+        return responseHistoryPlans;
+    }
+
+    private buildTemporaryDocumentText(targetDocument: TextDocument, responseHistoryPlans: ResponseHistoryPlan[]): string {
+        let temporaryDocumentText = targetDocument.getText();
+        const responseInsertions = responseHistoryPlans
+            .filter((responseHistoryPlan): responseHistoryPlan is ResponseHistoryPlan & { responseCaptureContext: ResponseCaptureContext } =>
+                !!responseHistoryPlan.responseCaptureContext)
+            .map(responseHistoryPlan => ({
+                offset: targetDocument.offsetAt(responseHistoryPlan.requestRange.end),
+                text: `\n\n>>! ${responseHistoryPlan.responseCaptureContext.captureRelativePath}`,
+            }))
+            .sort((leftInsertion, rightInsertion) => rightInsertion.offset - leftInsertion.offset);
+
+        for (const responseInsertion of responseInsertions) {
+            temporaryDocumentText = `${temporaryDocumentText.slice(0, responseInsertion.offset)}${responseInsertion.text}${temporaryDocumentText.slice(responseInsertion.offset)}`;
+        }
+
+        return this.normalizeBlockText(temporaryDocumentText);
     }
 
     private async removeTemporaryFile(temporaryFile: string): Promise<void> {

@@ -22,6 +22,7 @@ Without `ijhttp`, the extension still provides:
 - highlights `.http` files
 - detects request blocks separated by `###`
 - runs the current request block through system `ijhttp`
+- runs all request blocks from the current file through system `ijhttp`
 - auto-discovers `http-client.env.json` and `http-client.private.env.json`
 - supports common JetBrains HTTP Client constructs such as `# @name`, `{{variables}}`, pre-request scripts, and response-handler scripts
 - saves response bodies into a local `.response/` folder and appends history comments like `# <> ./.response/...` below executed requests
@@ -39,6 +40,12 @@ Run the current request block with:
 - CodeLens `Run with ijhttp`
 - command `ijhttp Client: Run Current Request`
 - shortcut `Ctrl+Alt+R` / `Cmd+Alt+R`
+
+Run all request blocks from the current file with:
+
+- top-of-file CodeLens `Run all with ijhttp`
+- command `ijhttp Client: Run All Requests in File`
+- editor context menu action `Run All Requests in File`
 
 ## Settings
 
