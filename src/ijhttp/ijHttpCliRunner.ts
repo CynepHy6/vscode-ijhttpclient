@@ -857,16 +857,18 @@ export class IjHttpCliRunner implements Disposable {
 
     private async appendHistoryComment(targetDocument: TextDocument, requestRange: Range, historyCommentLine: string): Promise<void> {
         const historyBlockInfo = this.getHistoryBlockInfo(targetDocument, requestRange);
-        const insertionLine = historyBlockInfo.insertionLine;
-        const nextLineText = insertionLine < targetDocument.lineCount ? targetDocument.lineAt(insertionLine).text : '';
-        const leadingSeparator = historyBlockInfo.hasExistingHistory
+        const normalizedHistoryBlockInfo = this.normalizeHistoryBlockInfo(targetDocument, historyBlockInfo);
+        const insertionLine = normalizedHistoryBlockInfo.insertionLine;
+        const leadingSeparator = normalizedHistoryBlockInfo.hasExistingHistory
             ? insertionLine < targetDocument.lineCount ? '' : '\n'
-            : historyBlockInfo.hasSpacerLine
+            : normalizedHistoryBlockInfo.hasSpacerLine
                 ? ''
                 : insertionLine < targetDocument.lineCount
                     ? '\n'
                     : '\n\n';
-        const trailingSeparator = insertionLine < targetDocument.lineCount && nextLineText.trim() !== '' ? '\n' : '';
+        const trailingSeparator = normalizedHistoryBlockInfo.hasNextContent
+            ? normalizedHistoryBlockInfo.hasTrailingSpacerLine ? '\n' : '\n\n'
+            : '';
         const workspaceEdit = new WorkspaceEdit();
         workspaceEdit.insert(targetDocument.uri, new Position(insertionLine, 0), `${leadingSeparator}${historyCommentLine}${trailingSeparator}`);
         await workspace.applyEdit(workspaceEdit);
@@ -877,6 +879,8 @@ export class IjHttpCliRunner implements Disposable {
         insertionLine: number;
         hasSpacerLine: boolean;
         hasExistingHistory: boolean;
+        hasTrailingSpacerLine: boolean;
+        hasNextContent: boolean;
     } {
         const historyStartLine = this.getHistoryStartLine(targetDocument, requestRange);
         let scanLine = historyStartLine;
@@ -891,10 +895,59 @@ export class IjHttpCliRunner implements Disposable {
             scanLine++;
         }
 
+        const hasTrailingSpacerLine = scanLine < targetDocument.lineCount && targetDocument.lineAt(scanLine).text.trim() === '';
+        const nextContentLine = hasTrailingSpacerLine ? scanLine + 1 : scanLine;
+        const hasNextContent = nextContentLine < targetDocument.lineCount && targetDocument.lineAt(nextContentLine).text.trim() !== '';
+
         return {
             insertionLine: scanLine,
             hasSpacerLine,
             hasExistingHistory: scanLine > historyLineStart,
+            hasTrailingSpacerLine,
+            hasNextContent,
+        };
+    }
+
+    private normalizeHistoryBlockInfo(targetDocument: TextDocument, historyBlockInfo: {
+        insertionLine: number;
+        hasSpacerLine: boolean;
+        hasExistingHistory: boolean;
+        hasTrailingSpacerLine: boolean;
+        hasNextContent: boolean;
+    }): {
+        insertionLine: number;
+        hasSpacerLine: boolean;
+        hasExistingHistory: boolean;
+        hasTrailingSpacerLine: boolean;
+        hasNextContent: boolean;
+    } {
+        const hasBlankLineBeforeInsertion = historyBlockInfo.insertionLine > 0
+            && targetDocument.lineAt(historyBlockInfo.insertionLine - 1).text.trim() === '';
+        if (!hasBlankLineBeforeInsertion) {
+            return historyBlockInfo;
+        }
+
+        let probeLine = historyBlockInfo.insertionLine - 1;
+        while (probeLine >= 0 && targetDocument.lineAt(probeLine).text.trim() === '') {
+            probeLine--;
+        }
+
+        if (probeLine < 0 || !this.isHistoryCommentLine(targetDocument.lineAt(probeLine).text)) {
+            return historyBlockInfo;
+        }
+
+        let firstTrailingBlankLine = probeLine + 1;
+        while (firstTrailingBlankLine < historyBlockInfo.insertionLine
+            && targetDocument.lineAt(firstTrailingBlankLine).text.trim() !== '') {
+            firstTrailingBlankLine++;
+        }
+
+        return {
+            ...historyBlockInfo,
+            insertionLine: firstTrailingBlankLine,
+            hasExistingHistory: true,
+            hasTrailingSpacerLine: true,
+            hasNextContent: true,
         };
     }
 

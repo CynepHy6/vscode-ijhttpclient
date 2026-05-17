@@ -2,7 +2,7 @@
     "name": "ijhttp-client",
     "displayName": "ijhttp Client",
     "description": "JetBrains HTTP Client support for VS Code/Cursor via installed ijhttp.",
-    "version": "1.1.7",
+    "version": "1.1.9",
     "publisher": "hy6",
     "author": {
         "name": "hy6"

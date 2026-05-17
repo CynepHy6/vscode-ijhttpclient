@@ -169,6 +169,7 @@ describe('IjHttpCliRunner e2e', () => {
             expect(historyLines).toHaveLength(2);
             expect(finalDocumentText).toContain('}\n\n# <> ./.response/');
             expect(finalDocumentText).toContain(`${historyLines[0]}\n${historyLines[1]}`);
+            expect(finalDocumentText).not.toContain(`${historyLines[0]}\n\n${historyLines[1]}`);
 
             const firstResponsePath = join(temporaryDirectory, historyLines[0].replace('# <> ./', ''));
             const secondResponsePath = join(temporaryDirectory, historyLines[1].replace('# <> ./', ''));
@@ -179,6 +180,81 @@ describe('IjHttpCliRunner e2e', () => {
             expect(firstResponseText).toContain('"ok":true');
             expect(secondResponseText).toContain('HTTP/1.1 200 OK');
             expect(secondResponseText).toContain('"requestNumber":2');
+        } finally {
+            await new Promise<void>((resolve, reject) => {
+                server.close(error => error ? reject(error) : resolve());
+            });
+            await rm(temporaryDirectory, { recursive: true, force: true });
+        }
+    }, 20000);
+
+    it('keeps one blank line between a history block and the next request block', async () => {
+        const temporaryDirectory = await mkdtemp(join(tmpdir(), 'ijhttp-e2e-spacing-test-'));
+        const requestFilePath = join(temporaryDirectory, 'two-requests.http');
+        const server = createServer((request, response) => {
+            response.writeHead(200, { 'Content-Type': 'application/json' });
+            response.end(JSON.stringify({ path: request.url }));
+        });
+
+        try {
+            await new Promise<void>((resolve, reject) => {
+                server.once('error', reject);
+                server.listen(0, '127.0.0.1', () => resolve());
+            });
+
+            const serverAddress = server.address();
+            if (!serverAddress || typeof serverAddress === 'string') {
+                throw new Error('Unable to determine local spacing test server port.');
+            }
+
+            const requestText = [
+                '### first request',
+                '# @name firstRequest',
+                `POST http://127.0.0.1:${serverAddress.port}/first`,
+                'Content-Type: application/json',
+                '',
+                '{',
+                '  "message": "hello from first"',
+                '}',
+                '',
+                '### second request',
+                '# @name secondRequest',
+                `GET http://127.0.0.1:${serverAddress.port}/second`,
+                'Accept: application/json',
+            ].join('\n');
+            await writeFile(requestFilePath, requestText, 'utf8');
+
+            const targetDocument = createMutableTextDocument(requestFilePath, requestText);
+            installWorkspaceEditMock(targetDocument);
+            targetDocument.save.mockImplementation(async () => {
+                await writeFile(requestFilePath, targetDocument.getText(), 'utf8');
+                return true;
+            });
+
+            workspace.getConfiguration.mockReturnValue({
+                get: (key: string, defaultValue: unknown) => {
+                    if (key === 'ijhttpPath') {
+                        return 'ijhttp';
+                    }
+                    if (key === 'logLevel') {
+                        return 'BASIC';
+                    }
+                    return defaultValue;
+                },
+            });
+            workspace.getWorkspaceFolder.mockReturnValue({
+                uri: { fsPath: temporaryDirectory },
+            });
+
+            const outputChannel = createOutputChannel();
+            const runner = new IjHttpCliRunner(outputChannel as never, createGlobalState() as never);
+            await runner.runCurrentRequest(targetDocument as never, new Range(2, 0, 2, 10));
+            await runner.runCurrentRequest(targetDocument as never, new Range(2, 0, 2, 10));
+
+            const finalDocumentText = await readFile(requestFilePath, 'utf8');
+            const historyLines = finalDocumentText.match(/^# <> \.\/\.response\/.+$/gm) ?? [];
+            expect(historyLines).toHaveLength(2);
+            expect(finalDocumentText).toContain(`${historyLines[0]}\n${historyLines[1]}\n\n### second request`);
         } finally {
             await new Promise<void>((resolve, reject) => {
                 server.close(error => error ? reject(error) : resolve());

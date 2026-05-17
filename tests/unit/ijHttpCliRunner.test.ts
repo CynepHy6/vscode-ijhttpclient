@@ -232,4 +232,91 @@ describe('IjHttpCliRunner unit regressions', () => {
             '# <> ./.response/second.response',
         ].join('\n'));
     });
+
+    it('keeps one blank line after the history block when the next request follows', async () => {
+        const runner = new IjHttpCliRunner(createOutputChannel() as never, createGlobalState() as never) as never;
+        const targetDocument = createMutableTextDocument(
+            '/tmp/request.http',
+            [
+                'POST https://example.com/api/update',
+                'Content-Type: application/json',
+                '',
+                '{',
+                '  "message": "hello"',
+                '}',
+                '',
+                '### next request',
+                'GET https://example.com/api/next',
+            ].join('\n')
+        );
+        installWorkspaceEditMock(targetDocument);
+
+        const appendHistoryComment = runner['appendHistoryComment'].bind(runner) as (
+            document: typeof targetDocument,
+            requestRange: Range,
+            historyCommentLine: string
+        ) => Promise<void>;
+        const requestRange = new Range(0, 0, 5, 1);
+
+        await appendHistoryComment(targetDocument, requestRange, '# <> ./.response/first.response');
+        await appendHistoryComment(targetDocument, requestRange, '# <> ./.response/second.response');
+
+        expect(targetDocument.getText()).toBe([
+            'POST https://example.com/api/update',
+            'Content-Type: application/json',
+            '',
+            '{',
+            '  "message": "hello"',
+            '}',
+            '',
+            '# <> ./.response/first.response',
+            '# <> ./.response/second.response',
+            '',
+            '### next request',
+            'GET https://example.com/api/next',
+        ].join('\n'));
+    });
+
+    it('keeps the history block compact even when the second append uses an expanded request range', async () => {
+        const runner = new IjHttpCliRunner(createOutputChannel() as never, createGlobalState() as never) as never;
+        const targetDocument = createMutableTextDocument(
+            '/tmp/request.http',
+            [
+                'POST https://example.com/api/update',
+                'Content-Type: application/json',
+                '',
+                '{',
+                '  "message": "hello"',
+                '}',
+                '',
+                '### next request',
+                'GET https://example.com/api/next',
+            ].join('\n')
+        );
+        installWorkspaceEditMock(targetDocument);
+
+        const appendHistoryComment = runner['appendHistoryComment'].bind(runner) as (
+            document: typeof targetDocument,
+            requestRange: Range,
+            historyCommentLine: string
+        ) => Promise<void>;
+
+        await appendHistoryComment(targetDocument, new Range(0, 0, 5, 1), '# <> ./.response/first.response');
+        await appendHistoryComment(targetDocument, new Range(0, 0, 7, 0), '# <> ./.response/second.response');
+
+        expect(targetDocument.getText()).toBe([
+            'POST https://example.com/api/update',
+            'Content-Type: application/json',
+            '',
+            '{',
+            '  "message": "hello"',
+            '}',
+            '',
+            '# <> ./.response/first.response',
+            '# <> ./.response/second.response',
+            '',
+            '### next request',
+            'GET https://example.com/api/next',
+        ].join('\n'));
+    });
 });
