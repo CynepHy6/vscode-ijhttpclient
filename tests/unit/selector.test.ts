@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Selector } from '../src/utils/selector';
+import { Selector } from '../../src/utils/selector';
 
 describe('Selector.sanitizeExecutableText', () => {
     it('removes ordinary comments but preserves executable directives and scripts', () => {

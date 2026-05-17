@@ -856,15 +856,63 @@ export class IjHttpCliRunner implements Disposable {
     }
 
     private async appendHistoryComment(targetDocument: TextDocument, requestRange: Range, historyCommentLine: string): Promise<void> {
-        const insertionLine = Math.min(requestRange.end.line + 1, targetDocument.lineCount);
-        const previousLineText = targetDocument.lineAt(requestRange.end.line).text;
+        const historyBlockInfo = this.getHistoryBlockInfo(targetDocument, requestRange);
+        const insertionLine = historyBlockInfo.insertionLine;
         const nextLineText = insertionLine < targetDocument.lineCount ? targetDocument.lineAt(insertionLine).text : '';
-        const leadingSeparator = previousLineText.trim() === '' ? '' : '\n\n';
+        const leadingSeparator = historyBlockInfo.hasExistingHistory
+            ? insertionLine < targetDocument.lineCount ? '' : '\n'
+            : historyBlockInfo.hasSpacerLine
+                ? ''
+                : insertionLine < targetDocument.lineCount
+                    ? '\n'
+                    : '\n\n';
         const trailingSeparator = insertionLine < targetDocument.lineCount && nextLineText.trim() !== '' ? '\n' : '';
         const workspaceEdit = new WorkspaceEdit();
         workspaceEdit.insert(targetDocument.uri, new Position(insertionLine, 0), `${leadingSeparator}${historyCommentLine}${trailingSeparator}`);
         await workspace.applyEdit(workspaceEdit);
         await targetDocument.save();
+    }
+
+    private getHistoryBlockInfo(targetDocument: TextDocument, requestRange: Range): {
+        insertionLine: number;
+        hasSpacerLine: boolean;
+        hasExistingHistory: boolean;
+    } {
+        const historyStartLine = this.getHistoryStartLine(targetDocument, requestRange);
+        let scanLine = historyStartLine;
+        let hasSpacerLine = false;
+        if (scanLine < targetDocument.lineCount && targetDocument.lineAt(scanLine).text.trim() === '') {
+            hasSpacerLine = true;
+            scanLine++;
+        }
+
+        const historyLineStart = scanLine;
+        while (scanLine < targetDocument.lineCount && this.isHistoryCommentLine(targetDocument.lineAt(scanLine).text)) {
+            scanLine++;
+        }
+
+        return {
+            insertionLine: scanLine,
+            hasSpacerLine,
+            hasExistingHistory: scanLine > historyLineStart,
+        };
+    }
+
+    private getHistoryStartLine(targetDocument: TextDocument, requestRange: Range): number {
+        let effectiveRequestEndLine = Math.min(requestRange.end.line, targetDocument.lineCount - 1);
+        while (effectiveRequestEndLine >= requestRange.start.line && this.isHistoryCommentLine(targetDocument.lineAt(effectiveRequestEndLine).text)) {
+            effectiveRequestEndLine--;
+        }
+
+        while (effectiveRequestEndLine >= requestRange.start.line && targetDocument.lineAt(effectiveRequestEndLine).text.trim() === '') {
+            effectiveRequestEndLine--;
+        }
+
+        return Math.min(effectiveRequestEndLine + 1, targetDocument.lineCount);
+    }
+
+    private isHistoryCommentLine(lineText: string): boolean {
+        return /^\s*#\s*<>\s+\S+/.test(lineText);
     }
 
     private formatTimestamp(dateValue: Date): string {
