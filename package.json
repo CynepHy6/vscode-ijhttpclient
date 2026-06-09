@@ -217,7 +217,7 @@
         "tslint": "^6.1.2",
         "typescript": "^5.4.2",
         "vitest": "^4.1.6",
-        "webpack": "^5.75.0",
+        "webpack": "^5.106.2",
         "webpack-cli": "^5.0.1"
     }
 }
