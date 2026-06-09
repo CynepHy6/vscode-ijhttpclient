@@ -16,6 +16,14 @@ import {
     workspace
 } from 'vscode';
 import * as Constants from '../common/constants';
+import {
+    buildVariableResolutionContext,
+    collectPromptableVariables,
+    findUnresolvedVariableReferences,
+    isSensitiveVariableName,
+    PromptVariableDefinition,
+    RequestVariableOverrides,
+} from '../utils/requestVariablePrompt';
 import { Selector } from '../utils/selector';
 
 interface IjHttpRuntimeSettings {
@@ -24,6 +32,8 @@ interface IjHttpRuntimeSettings {
     publicEnvironmentFile?: string;
     privateEnvironmentFile?: string;
     logLevel: string;
+    publicVariableOverrides?: Record<string, string>;
+    privateVariableOverrides?: Record<string, string>;
 }
 
 interface ResponseCaptureContext {
@@ -98,12 +108,26 @@ export class IjHttpCliRunner implements Disposable {
             return;
         }
 
+        const variableOverrides = await this.promptForRequestVariables(requestBlock.text);
+        if (!variableOverrides) {
+            this.outputChannel.appendLine('ijhttp run cancelled: variable input was dismissed.');
+            return;
+        }
+
+        if (!await this.validateResolvableVariables(requestBlock.text, runtimeSettings)) {
+            return;
+        }
+
         const temporaryFile = this.buildTemporaryFilePath(targetDocument.fileName, 'current-request');
         const responseCaptureContext = await this.prepareResponseCapture(targetDocument, requestBlock.text);
         const temporaryRequestText = this.buildTemporaryRequestText(requestBlock.text);
         await fileSystem.writeFile(temporaryFile, temporaryRequestText, 'utf8');
 
-        const argumentList = this.buildArgumentList(runtimeSettings, temporaryFile, !!responseCaptureContext);
+        const argumentList = this.buildArgumentList(
+            this.applyVariableOverrides(runtimeSettings, variableOverrides),
+            temporaryFile,
+            !!responseCaptureContext
+        );
         const workingDirectory = path.dirname(targetDocument.fileName);
         this.outputChannel.show(true);
         this.outputChannel.appendLine(`$ ${runtimeSettings.executablePath} ${argumentList.map(item => this.quoteArgument(item)).join(' ')}`);
@@ -146,12 +170,26 @@ export class IjHttpCliRunner implements Disposable {
             return;
         }
 
+        const variableOverrides = await this.promptForRequestVariables(targetDocument.getText());
+        if (!variableOverrides) {
+            this.outputChannel.appendLine('ijhttp run cancelled: variable input was dismissed.');
+            return;
+        }
+
+        if (!await this.validateResolvableVariables(targetDocument.getText(), runtimeSettings)) {
+            return;
+        }
+
         const responseHistoryPlans = await this.prepareResponseHistoryPlans(targetDocument, requestRanges);
         const temporaryFile = this.buildTemporaryFilePath(targetDocument.fileName, 'all-requests');
         await fileSystem.writeFile(temporaryFile, this.buildTemporaryDocumentText(targetDocument), 'utf8');
 
         const needsResponseMetadata = responseHistoryPlans.some(plan => !!plan.responseCaptureContext);
-        const argumentList = this.buildArgumentList(runtimeSettings, temporaryFile, needsResponseMetadata);
+        const argumentList = this.buildArgumentList(
+            this.applyVariableOverrides(runtimeSettings, variableOverrides),
+            temporaryFile,
+            needsResponseMetadata
+        );
         const workingDirectory = path.dirname(targetDocument.fileName);
         this.outputChannel.show(true);
         this.outputChannel.appendLine(`$ ${runtimeSettings.executablePath} ${argumentList.map(item => this.quoteArgument(item)).join(' ')}`);
@@ -541,8 +579,133 @@ export class IjHttpCliRunner implements Disposable {
             argumentList.push('--env', runtimeSettings.environmentName);
         }
 
+        this.appendVariableOverrideArguments(argumentList, '-V', runtimeSettings.publicVariableOverrides);
+        this.appendVariableOverrideArguments(argumentList, '-P', runtimeSettings.privateVariableOverrides);
+
         argumentList.push('-L', this.getEffectiveLogLevel(runtimeSettings.logLevel, needsResponseMetadata), temporaryFile);
         return argumentList;
+    }
+
+    private appendVariableOverrideArguments(
+        argumentList: string[],
+        flagName: '-V' | '-P',
+        variableOverrides: Record<string, string> | undefined
+    ): void {
+        if (!variableOverrides) {
+            return;
+        }
+
+        for (const [variableName, variableValue] of Object.entries(variableOverrides)) {
+            argumentList.push(flagName, `${variableName}=${variableValue}`);
+        }
+    }
+
+    private applyVariableOverrides(
+        runtimeSettings: IjHttpRuntimeSettings,
+        variableOverrides: RequestVariableOverrides
+    ): IjHttpRuntimeSettings {
+        return {
+            ...runtimeSettings,
+            publicVariableOverrides: variableOverrides.publicVariableOverrides,
+            privateVariableOverrides: variableOverrides.privateVariableOverrides,
+        };
+    }
+
+    private async promptForRequestVariables(requestText: string): Promise<RequestVariableOverrides | undefined> {
+        const promptableVariables = collectPromptableVariables(requestText);
+        if (promptableVariables.length === 0) {
+            return {
+                publicVariableOverrides: {},
+                privateVariableOverrides: {},
+            };
+        }
+
+        return this.promptForVariableValues(promptableVariables);
+    }
+
+    private async validateResolvableVariables(requestText: string, runtimeSettings: IjHttpRuntimeSettings): Promise<boolean> {
+        const sanitizedRequestText = Selector.sanitizeExecutableText(requestText);
+        const environmentVariableNames = await this.readEnvironmentVariableNames(runtimeSettings);
+        const resolutionContext = buildVariableResolutionContext(requestText, environmentVariableNames);
+        const unresolvedVariableNames = findUnresolvedVariableReferences(sanitizedRequestText, resolutionContext);
+        if (unresolvedVariableNames.length === 0) {
+            return true;
+        }
+
+        const errorMessage = `Request cannot be run: unresolved variables: ${unresolvedVariableNames.join(', ')}. `
+            + 'Define them in http-client.env.json, as @var = value, or add # @prompt.';
+        this.outputChannel.show(true);
+        this.outputChannel.appendLine(errorMessage);
+        window.showErrorMessage(errorMessage);
+        return false;
+    }
+
+    private async readEnvironmentVariableNames(runtimeSettings: IjHttpRuntimeSettings): Promise<Set<string>> {
+        const environmentVariableNames = new Set<string>();
+        const environmentName = runtimeSettings.environmentName;
+        if (!environmentName) {
+            return environmentVariableNames;
+        }
+
+        for (const environmentFilePath of [runtimeSettings.publicEnvironmentFile, runtimeSettings.privateEnvironmentFile]) {
+            if (!environmentFilePath) {
+                continue;
+            }
+
+            for (const variableName of await this.readEnvironmentVariableNamesFromFile(environmentFilePath, environmentName)) {
+                environmentVariableNames.add(variableName);
+            }
+        }
+
+        return environmentVariableNames;
+    }
+
+    private async readEnvironmentVariableNamesFromFile(environmentFilePath: string, environmentName: string): Promise<string[]> {
+        try {
+            const fileContent = await fileSystem.readFile(environmentFilePath, 'utf8');
+            const parsedContent = JSON.parse(fileContent) as Record<string, Record<string, unknown>>;
+            const environmentVariables = parsedContent?.[environmentName];
+            if (!environmentVariables || typeof environmentVariables !== 'object' || Array.isArray(environmentVariables)) {
+                return [];
+            }
+
+            return Object.keys(environmentVariables);
+        } catch {
+            return [];
+        }
+    }
+
+    private async promptForVariableValues(
+        promptableVariables: PromptVariableDefinition[]
+    ): Promise<RequestVariableOverrides | undefined> {
+        const publicVariableOverrides: Record<string, string> = {};
+        const privateVariableOverrides: Record<string, string> = {};
+
+        for (const promptVariable of promptableVariables) {
+            const variableValue = await window.showInputBox({
+                title: 'ijhttp request variable',
+                prompt: promptVariable.description
+                    ? `Input value for "${promptVariable.name}" (${promptVariable.description})`
+                    : `Input value for "${promptVariable.name}"`,
+                ignoreFocusOut: true,
+                password: isSensitiveVariableName(promptVariable.name) || promptVariable.passMode === 'private',
+            });
+
+            if (variableValue === undefined) {
+                return undefined;
+            }
+
+            if (promptVariable.passMode === 'private') {
+                privateVariableOverrides[promptVariable.name] = variableValue;
+            } else {
+                publicVariableOverrides[promptVariable.name] = variableValue;
+            }
+        }
+
+        return {
+            publicVariableOverrides,
+            privateVariableOverrides,
+        };
     }
 
     private async runProcess(executablePath: string, argumentList: string[], workingDirectory: string): Promise<IjHttpRunResult> {
@@ -965,7 +1128,7 @@ export class IjHttpCliRunner implements Disposable {
     }
 
     private isHistoryCommentLine(lineText: string): boolean {
-        return /^\s*#\s*<>\s+\S+/.test(lineText);
+        return Constants.HistoryCommentLineRegex.test(lineText);
     }
 
     private formatTimestamp(dateValue: Date): string {

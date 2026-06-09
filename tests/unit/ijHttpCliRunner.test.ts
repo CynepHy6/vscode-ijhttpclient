@@ -277,6 +277,50 @@ describe('IjHttpCliRunner unit regressions', () => {
         ].join('\n'));
     });
 
+    it('adds -V and -P overrides to ijhttp arguments', () => {
+        const runner = new IjHttpCliRunner(createOutputChannel() as never, createGlobalState() as never) as never;
+        const buildArgumentList = runner['buildArgumentList'].bind(runner) as (
+            runtimeSettings: {
+                executablePath: string;
+                environmentName: string;
+                publicEnvironmentFile?: string;
+                privateEnvironmentFile?: string;
+                logLevel: string;
+                publicVariableOverrides?: Record<string, string>;
+                privateVariableOverrides?: Record<string, string>;
+            },
+            temporaryFile: string,
+            needsResponseMetadata: boolean
+        ) => string[];
+
+        const argumentList = buildArgumentList(
+            {
+                executablePath: 'ijhttp',
+                environmentName: 'demo',
+                publicEnvironmentFile: '/tmp/http-client.env.json',
+                logLevel: 'BASIC',
+                publicVariableOverrides: { studentId: '12345' },
+                privateVariableOverrides: { token: 'secret-token' },
+            },
+            '/tmp/request.http',
+            false
+        );
+
+        expect(argumentList).toEqual([
+            '--env-file',
+            '/tmp/http-client.env.json',
+            '--env',
+            'demo',
+            '-V',
+            'studentId=12345',
+            '-P',
+            'token=secret-token',
+            '-L',
+            'BASIC',
+            '/tmp/request.http',
+        ]);
+    });
+
     it('keeps the history block compact even when the second append uses an expanded request range', async () => {
         const runner = new IjHttpCliRunner(createOutputChannel() as never, createGlobalState() as never) as never;
         const targetDocument = createMutableTextDocument(

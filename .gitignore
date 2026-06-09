@@ -7,3 +7,4 @@ dist
 # Logs
 npm-debug.log*
 .response/
+example/temp/

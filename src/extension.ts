@@ -3,6 +3,7 @@ import { commands, ExtensionContext, languages, Range, TextDocument, window } fr
 import { IjHttpCliRunner } from './ijhttp/ijHttpCliRunner';
 import { IjHttpDiagnosticsProvider } from './providers/customVariableDiagnosticsProvider';
 import { HttpCodeLensProvider } from './providers/httpCodeLensProvider';
+import { HttpHistoryLinkProvider } from './providers/httpHistoryLinkProvider';
 
 export async function activate(context: ExtensionContext) {
     const outputChannel = window.createOutputChannel('ijhttp Client');
@@ -39,6 +40,9 @@ export async function activate(context: ExtensionContext) {
         await cliRunner.selectEnvironment(document);
     }));
     context.subscriptions.push(languages.registerCodeLensProvider(documentSelector, new HttpCodeLensProvider()));
+    const historyLinkProvider = new HttpHistoryLinkProvider();
+    context.subscriptions.push(historyLinkProvider);
+    context.subscriptions.push(languages.registerDocumentLinkProvider(documentSelector, historyLinkProvider));
     context.subscriptions.push(window.onDidChangeActiveTextEditor(editor => {
         void cliRunner.refreshStatus(editor?.document);
     }));
