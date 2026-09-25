@@ -126,6 +126,7 @@ describe('IjHttpCliRunner e2e', () => {
                 '# @name localUpdate',
                 `POST http://127.0.0.1:${serverAddress.port}/update`,
                 'Content-Type: application/json',
+                'X-Api-Key: e2e-dummy-key-value',
                 '',
                 '{',
                 '# this comment must not reach the server',
@@ -180,6 +181,12 @@ describe('IjHttpCliRunner e2e', () => {
             expect(firstResponseText).toContain('"ok":true');
             expect(secondResponseText).toContain('HTTP/1.1 200 OK');
             expect(secondResponseText).toContain('"requestNumber":2');
+
+            // request dump must not leak into the saved response history
+            expect(firstResponseText).not.toContain('= request =>');
+            expect(firstResponseText).not.toContain('User-Agent');
+            expect(firstResponseText).not.toContain('e2e-dummy-key-value');
+            expect(firstResponseText).not.toContain('hello from e2e');
         } finally {
             await new Promise<void>((resolve, reject) => {
                 server.close(error => error ? reject(error) : resolve());

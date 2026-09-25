@@ -75,6 +75,21 @@ interface EnvironmentContext {
 
 export class IjHttpCliRunner implements Disposable {
     private static readonly rememberedEnvironmentPrefix = 'ijhttp-client.rememberedEnvironment';
+    private static readonly sensitiveHistoryHeaderNames = new Set([
+        'authorization',
+        'proxy-authorization',
+        'cookie',
+        'set-cookie',
+        'api-key',
+        'x-api-key',
+        'x-auth-token',
+        'x-access-token',
+        'x-refresh-token',
+        'x-id-token',
+        'x-session-token',
+        'x-csrf-token',
+        'x-xsrf-token',
+    ]);
     private readonly statusItem: StatusBarItem;
     private readonly validatedExecutables = new Set<string>();
     private lastRunState = 'idle';
@@ -130,7 +145,7 @@ export class IjHttpCliRunner implements Disposable {
         );
         const workingDirectory = path.dirname(targetDocument.fileName);
         this.outputChannel.show(true);
-        this.outputChannel.appendLine(`$ ${runtimeSettings.executablePath} ${argumentList.map(item => this.quoteArgument(item)).join(' ')}`);
+        this.logCommandLine(runtimeSettings.executablePath, argumentList);
         this.lastRunState = 'running';
         await this.refreshStatus(targetDocument);
 
@@ -192,7 +207,7 @@ export class IjHttpCliRunner implements Disposable {
         );
         const workingDirectory = path.dirname(targetDocument.fileName);
         this.outputChannel.show(true);
-        this.outputChannel.appendLine(`$ ${runtimeSettings.executablePath} ${argumentList.map(item => this.quoteArgument(item)).join(' ')}`);
+        this.logCommandLine(runtimeSettings.executablePath, argumentList);
         this.lastRunState = 'running';
         await this.refreshStatus(targetDocument);
 
@@ -799,10 +814,11 @@ export class IjHttpCliRunner implements Disposable {
 
     private captureRequestOutput(outputLine: string, runResult: IjHttpRunResult): void {
         const trimmedLine = outputLine.trimEnd();
-        const requestStartMatch = /^Request '#(\d+)'\b/.exec(trimmedLine);
-        if (requestStartMatch) {
-            const requestIndex = Number(requestStartMatch[1]) - 1;
-            const requestCapture = this.ensureRequestCapture(runResult, requestIndex);
+        // ijhttp prints "Request '#1'" for unnamed blocks, but "Request '<name>'" for named ones —
+        // both must start a new capture, otherwise the response history falls back to the full dump
+        // and leaks request headers/body into *.response files.
+        if (/^Request '/.test(trimmedLine)) {
+            const requestCapture = this.ensureRequestCapture(runResult, runResult.requestCaptures.length);
             requestCapture.outputLines.push(trimmedLine);
             requestCapture.isCapturingResponse = false;
             runResult.activeRequestCapture = requestCapture;
@@ -1009,13 +1025,50 @@ export class IjHttpCliRunner implements Disposable {
 
     private buildResponseFileText(requestCapture: RequestCapture): string {
         const relevantLines = requestCapture.responseLines.length > 0 ? requestCapture.responseLines : requestCapture.outputLines;
-        const normalizedText = relevantLines.join('\n').trim();
+        const normalizedText = this.sanitizeResponseHistoryLines(relevantLines).join('\n').trim();
         return normalizedText ? `${normalizedText}\n` : '';
     }
 
     private buildFallbackResponseFileText(runResult: IjHttpRunResult): string {
-        const normalizedText = runResult.outputLines.join('\n').trim();
+        const normalizedText = this.sanitizeResponseHistoryLines(runResult.outputLines).join('\n').trim();
         return normalizedText ? `${normalizedText}\n` : '';
+    }
+
+    // A *.response file must never contain the "= request =>" dump: it carries credentials
+    // (Authorization/Cookie headers, body payloads). Sensitive response headers are masked as well.
+    private sanitizeResponseHistoryLines(historyLines: string[]): string[] {
+        const sanitizedLines: string[] = [];
+        let isInsideRequestSection = false;
+
+        for (const historyLine of historyLines) {
+            const trimmedLine = historyLine.trim();
+            if (/^= request =>$/i.test(trimmedLine)) {
+                isInsideRequestSection = true;
+                continue;
+            }
+
+            if (/^<= response =$/i.test(trimmedLine)) {
+                isInsideRequestSection = false;
+                continue;
+            }
+
+            if (isInsideRequestSection) {
+                continue;
+            }
+
+            sanitizedLines.push(this.maskSensitiveHeaderValue(historyLine));
+        }
+
+        return sanitizedLines;
+    }
+
+    private maskSensitiveHeaderValue(historyLine: string): string {
+        const headerMatch = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+)\s*:\s*\S.*$/.exec(historyLine);
+        if (!headerMatch || !IjHttpCliRunner.sensitiveHistoryHeaderNames.has(headerMatch[1].toLowerCase())) {
+            return historyLine;
+        }
+
+        return `${headerMatch[1]}: ***`;
     }
 
     private async appendHistoryComment(targetDocument: TextDocument, requestRange: Range, historyCommentLine: string): Promise<void> {
@@ -1236,6 +1289,33 @@ export class IjHttpCliRunner implements Disposable {
         } catch {
             return false;
         }
+    }
+
+    // The echoed command line must not expose private variable values passed via -P name=value.
+    private logCommandLine(executablePath: string, argumentList: string[]): void {
+        const displayArguments = this.maskPrivateVariableArguments(argumentList).map(item => this.quoteArgument(item));
+        this.outputChannel.appendLine(`$ ${executablePath} ${displayArguments.join(' ')}`);
+    }
+
+    private maskPrivateVariableArguments(argumentList: string[]): string[] {
+        const maskedArguments: string[] = [];
+        let maskNextArgument = false;
+
+        for (const argument of argumentList) {
+            if (maskNextArgument) {
+                const separatorIndex = argument.indexOf('=');
+                maskedArguments.push(separatorIndex >= 0 ? `${argument.slice(0, separatorIndex)}=***` : '***');
+                maskNextArgument = false;
+                continue;
+            }
+
+            maskedArguments.push(argument);
+            if (argument === '-P') {
+                maskNextArgument = true;
+            }
+        }
+
+        return maskedArguments;
     }
 
     private quoteArgument(argumentValue: string): string {

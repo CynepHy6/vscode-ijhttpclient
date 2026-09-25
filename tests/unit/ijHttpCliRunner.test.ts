@@ -138,6 +138,165 @@ describe('IjHttpCliRunner unit regressions', () => {
         }
     });
 
+    it('does not leak request credentials into response history for named requests', async () => {
+        const runner = new IjHttpCliRunner(createOutputChannel() as never, createGlobalState() as never) as never;
+        const temporaryDirectory = await mkdtemp(join(tmpdir(), 'ijhttp-runner-test-'));
+        const captureFilePath = join(temporaryDirectory, 'capture.response');
+
+        try {
+            const consumeOutputLine = runner['consumeOutputLine'].bind(runner) as (line: string, runResult: never) => void;
+            const finalizeResponseCapture = runner['finalizeResponseCapture'].bind(runner) as (
+                context: { captureFilePath: string },
+                requestCapture: { outputLines: string[]; responseLines: string[] }
+            ) => Promise<string | undefined>;
+            const runResult = { exitCode: 0, requestCaptures: [], outputLines: [] };
+
+            const dumpLines = [
+                "Request 'loginRequest' POST https://example.com/api/login",
+                '= request =>',
+                'POST https://example.com/api/login',
+                'Content-Type: application/json',
+                'Authorization: Bearer test-token-value',
+                'Cookie: session=test-session-value',
+                '',
+                '{"password":"test-password-value"}',
+                '',
+                '###',
+                '<= response =',
+                'HTTP/1.1 200 OK',
+                'Content-Type: application/json',
+                'Set-Cookie: srv=test-response-session; HttpOnly',
+                '',
+                '{"ok":true}',
+                'Response code: 200 (OK); Time: 10ms (10 ms); Content length: 11 bytes (11 B)',
+            ];
+            for (const dumpLine of dumpLines) {
+                consumeOutputLine(dumpLine, runResult as never);
+            }
+
+            expect(runResult.requestCaptures).toHaveLength(1);
+            const fileName = await finalizeResponseCapture({ captureFilePath }, runResult.requestCaptures[0] as never);
+            expect(fileName).toMatch(/\.200\.response$/);
+
+            const savedFileContent = await readFile(join(temporaryDirectory, fileName as string), 'utf8');
+            expect(savedFileContent).toContain('HTTP/1.1 200 OK');
+            expect(savedFileContent).toContain('{"ok":true}');
+            expect(savedFileContent).not.toContain('= request =>');
+            expect(savedFileContent).not.toContain('Authorization');
+            expect(savedFileContent).not.toContain('test-token-value');
+            expect(savedFileContent).not.toContain('test-session-value');
+            expect(savedFileContent).not.toContain('test-password-value');
+            expect(savedFileContent).toContain('Set-Cookie: ***');
+            expect(savedFileContent).not.toContain('test-response-session');
+        } finally {
+            await rm(temporaryDirectory, { recursive: true, force: true });
+        }
+    });
+
+    it('sanitizes fallback response dumps when no request capture exists', async () => {
+        const runner = new IjHttpCliRunner(createOutputChannel() as never, createGlobalState() as never) as never;
+        const temporaryDirectory = await mkdtemp(join(tmpdir(), 'ijhttp-runner-test-'));
+        const captureFilePath = join(temporaryDirectory, 'capture.response');
+
+        try {
+            const finalizeFallbackResponseCapture = runner['finalizeFallbackResponseCapture'].bind(runner) as (
+                context: { captureFilePath: string },
+                runResult: { responseStatusCode?: number; outputLines: string[] }
+            ) => Promise<string | undefined>;
+
+            const fileName = await finalizeFallbackResponseCapture(
+                { captureFilePath },
+                {
+                    responseStatusCode: 200,
+                    outputLines: [
+                        "Request 'loginRequest' POST https://example.com/api/login",
+                        '= request =>',
+                        'POST https://example.com/api/login',
+                        'Authorization: Bearer test-token-value',
+                        'X-Api-Key: test-api-key-value',
+                        '',
+                        '{"password":"test-password-value"}',
+                        '<= response =',
+                        'HTTP/1.1 200 OK',
+                        'Content-Type: application/json',
+                        '',
+                        '{"ok":true}',
+                    ],
+                }
+            );
+
+            const savedFileContent = await readFile(join(temporaryDirectory, fileName as string), 'utf8');
+            expect(savedFileContent).toContain('HTTP/1.1 200 OK');
+            expect(savedFileContent).toContain('{"ok":true}');
+            expect(savedFileContent).not.toContain('= request =>');
+            expect(savedFileContent).not.toContain('<= response =');
+            expect(savedFileContent).not.toContain('test-token-value');
+            expect(savedFileContent).not.toContain('test-api-key-value');
+            expect(savedFileContent).not.toContain('test-password-value');
+        } finally {
+            await rm(temporaryDirectory, { recursive: true, force: true });
+        }
+    });
+
+    it('keeps every executed request in separate captures when blocks are named', () => {
+        const runner = new IjHttpCliRunner(createOutputChannel() as never, createGlobalState() as never) as never;
+        const consumeOutputLine = runner['consumeOutputLine'].bind(runner) as (line: string, runResult: never) => void;
+        const runResult = { exitCode: 0, requestCaptures: [], outputLines: [] };
+
+        const dumpLines = [
+            "Request '#1' GET https://example.com/first",
+            '= request =>',
+            'GET https://example.com/first',
+            '<= response =',
+            'HTTP/1.1 200 OK',
+            '',
+            '{"first":true}',
+            'Response code: 200 (OK); Time: 10ms (10 ms); Content length: 14 bytes (14 B)',
+            "Request 'secondNamed' GET https://example.com/second",
+            '= request =>',
+            'GET https://example.com/second',
+            '<= response =',
+            'HTTP/1.1 200 OK',
+            '',
+            '{"second":true}',
+            'Response code: 200 (OK); Time: 10ms (10 ms); Content length: 15 bytes (15 B)',
+        ];
+        for (const dumpLine of dumpLines) {
+            consumeOutputLine(dumpLine, runResult as never);
+        }
+
+        expect(runResult.requestCaptures).toHaveLength(2);
+        expect(runResult.requestCaptures[0].responseLines.join('\n')).toContain('{"first":true}');
+        expect(runResult.requestCaptures[1].responseLines.join('\n')).toContain('{"second":true}');
+        expect(runResult.requestCaptures[1].responseLines.join('\n')).not.toContain('GET https://example.com/second');
+    });
+
+    it('masks private variable values in the echoed command line', () => {
+        const outputChannel = createOutputChannel();
+        const runner = new IjHttpCliRunner(outputChannel as never, createGlobalState() as never) as never;
+        const logCommandLine = runner['logCommandLine'].bind(runner) as (executablePath: string, argumentList: string[]) => void;
+
+        logCommandLine('ijhttp', [
+            '--env-file',
+            '/tmp/http-client.env.json',
+            '-V',
+            'studentId=12345',
+            '-P',
+            'token=secret-token-value',
+            '-P',
+            'empty=',
+            '-L',
+            'VERBOSE',
+            '/tmp/request.http',
+        ]);
+
+        const echoedOutput = outputChannel.appendLine.mock.calls.map(callArguments => callArguments[0]).join('\n');
+        expect(echoedOutput).toContain('-V studentId=12345');
+        expect(echoedOutput).toContain('-P token=***');
+        expect(echoedOutput).toContain('-P empty=***');
+        expect(echoedOutput).not.toContain('secret-token-value');
+    });
+
     it('persists response history even when ijhttp exits with an error', async () => {
         const outputChannel = createOutputChannel();
         const runner = new IjHttpCliRunner(outputChannel as never, createGlobalState() as never) as never;
