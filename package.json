@@ -207,17 +207,15 @@
         "test:all": "npm test && npm run test:e2e",
         "vscode:prepublish": "webpack --mode production",
         "webpack": "webpack --mode development",
-        "watch": "webpack --mode development --watch",
-        "tslint": "tslint --project tsconfig.json"
-    },
+    "watch": "webpack --mode development --watch"
+  },
     "devDependencies": {
         "@types/node": "^25.8.0",
         "@types/vscode": "^1.81.0",
         "ts-loader": "^7.0.5",
-        "tslint": "^6.1.2",
         "typescript": "^5.4.2",
-        "vitest": "^4.1.6",
-        "webpack": "^5.75.0",
+        "vitest": "^4.1.11",
+        "webpack": "^5.111.1",
         "webpack-cli": "^5.0.1"
     }
 }
